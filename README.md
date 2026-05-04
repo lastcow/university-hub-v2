@@ -65,9 +65,14 @@ university-hub-v2/
     mailgun.md                 # template names, variables, account setup
   mailgun_templates/           # canonical Mailgun template HTML + plaintext + meta
   scripts/
-    bootstrap-admin.mjs        # production: create the first super_admin
-    hash-password.mjs          # offline PBKDF2-SHA256 hash generator
-    sync-mailgun-templates.mjs # push mailgun_templates/ to the Mailgun account
+    bootstrap-admin.mjs            # production: create the first super_admin
+    hash-password.mjs              # offline PBKDF2-SHA256 hash generator
+    sync-mailgun-templates.mjs     # push mailgun_templates/ to the Mailgun account
+    backup-d1.mjs                  # daily D1 -> R2 backup (UNI-27)
+    restore-d1.mjs                 # restore a D1 dump from R2 (UNI-27)
+    provision-university.mjs       # spin up a new customer tenant end-to-end (UNI-28)
+    decommission-university.mjs    # tear a customer tenant back down (UNI-28)
+  provisioning/                # generated per-tenant wrangler.toml files (gitignored)
   .dev.vars.example            # Worker local secrets template
   .env.example                 # Frontend (Vite) env template
   package.json                 # npm workspaces root + top-level scripts
@@ -369,6 +374,27 @@ cd apps/worker && npx wrangler deploy
 Open the Pages URL (`https://university-hub-v2-web.pages.dev/`) to use
 the app. Custom domains for both services are an optional follow-up — see
 [docs/deployment.md → Custom domains](docs/deployment.md#custom-domains-future-step).
+
+### Per-customer provisioning
+
+Single-tenant per university is the deployment model: each customer gets
+its own Worker + D1 + Pages project. The 7-step walkthrough above
+provisions the SaaS-level baseline; the per-customer flow runs on top of
+it via:
+
+```bash
+npm run provision:university -- \
+  --name="Acme University" --slug=acme \
+  --admin-email=admin@acme.edu --admin-name="Site Admin" \
+  [--custom-domain=hub.acme.edu]
+```
+
+The script creates the per-tenant D1 + Worker + Pages project, applies
+non-seed migrations, sets every secret, and bootstraps the customer's
+super_admin in a single run. Re-running with the same inputs is a no-op.
+Tear-down via `npm run decommission:university -- --slug=<slug>
+--confirm`. Full walkthrough in
+[docs/per-customer-provisioning.md](docs/per-customer-provisioning.md).
 
 ## Auth flow
 

@@ -450,6 +450,27 @@ the in-Worker binding, lifecycle rules), the restore procedure, and the
 [docs/disaster-recovery.md](disaster-recovery.md). Provision the bucket
 during first deploy so the cron has somewhere to write on day one.
 
+## Per-customer provisioning
+
+The walkthrough above is the *first* deploy onto a new Cloudflare account
+— the SaaS-level baseline. After that, every customer university is its
+own Worker + D1 + Pages project. The per-customer provisioning flow is
+automated in `scripts/provision-university.mjs` and documented in
+[docs/per-customer-provisioning.md](per-customer-provisioning.md).
+
+Quick sketch (full inputs + idempotency rules in that doc):
+
+```bash
+npm run provision:university -- \
+  --name="Acme University" --slug=acme \
+  --admin-email=admin@acme.edu --admin-name="Site Admin" \
+  [--custom-domain=hub.acme.edu] \
+  [--mailgun-api-key=... --mailgun-domain=... \
+   --mailgun-from-email=... --mailgun-from-name=...]
+```
+
+Tear-down with `npm run decommission:university -- --slug=<slug> --confirm`.
+
 ## Custom domains (future step)
 
 This deploy uses default `*.pages.dev` and `*.workers.dev` hostnames so
