@@ -1,0 +1,16 @@
+{{app_name}} · Contact form
+
+New contact form message
+
+A visitor just submitted a message through the {{app_name}} contact form.
+
+From: {{contact_name}}
+Email: {{contact_email}}
+
+Message:
+{{contact_message}}
+
+Reply: mailto:{{contact_email}}
+
+---
+Sent via the {{app_name}} contact form at {{app_base_url}}. Operational notification — this address ({{support_email}}) receives every submission.

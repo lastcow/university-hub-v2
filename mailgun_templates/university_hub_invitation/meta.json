@@ -1,0 +1,17 @@
+{
+  "description": "Sent to a new member when an admin creates an invitation. Includes a sign-up link with a single-use token.",
+  "tags": ["transactional", "invitation", "university_hub"],
+  "engine": "handlebars",
+  "variables": [
+    "app_name",
+    "recipient_name",
+    "recipient_email",
+    "university_name",
+    "invited_by_name",
+    "invitation_url",
+    "invitation_expires_at",
+    "role",
+    "support_email",
+    "app_base_url"
+  ]
+}

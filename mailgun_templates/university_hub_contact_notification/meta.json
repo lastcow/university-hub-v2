@@ -1,0 +1,13 @@
+{
+  "description": "Internal notification sent to the support inbox when a visitor submits the public contact form.",
+  "tags": ["transactional", "contact_form", "internal", "university_hub"],
+  "engine": "handlebars",
+  "variables": [
+    "app_name",
+    "contact_name",
+    "contact_email",
+    "contact_message",
+    "support_email",
+    "app_base_url"
+  ]
+}

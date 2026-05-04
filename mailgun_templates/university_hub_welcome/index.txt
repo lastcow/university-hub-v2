@@ -1,0 +1,17 @@
+{{app_name}}
+
+Welcome, {{recipient_name}}.
+
+Your {{app_name}} account is ready. You're signed in as {{role}} at {{university_name}}.
+
+Open your dashboard:
+{{app_base_url}}
+
+Your account
+- Email: {{recipient_email}}
+- Role: {{role}}
+- University: {{university_name}}
+
+---
+You received this email because an account was just created for {{recipient_email}} on {{app_name}}. If this wasn't you, contact {{support_email}}.
+{{app_base_url}}

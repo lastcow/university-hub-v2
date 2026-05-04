@@ -1,0 +1,16 @@
+{{app_name}}
+
+Reminder: your invitation is waiting
+
+Hi {{recipient_name}},
+
+This is a reminder that {{invited_by_name}} invited you to join {{university_name}} on {{app_name}} as {{role}}. Your invitation is still valid — pick it up below.
+
+Accept the invitation:
+{{invitation_url}}
+
+Sent to {{recipient_email}}. This invitation expires on {{invitation_expires_at}}. If you no longer want to join, you can ignore this email and the invitation will lapse on its own.
+
+---
+Questions? Email {{support_email}}.
+{{app_base_url}}

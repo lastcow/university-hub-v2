@@ -1,0 +1,17 @@
+{{app_name}}
+
+You're invited to join {{app_name}}
+
+Hi {{recipient_name}},
+
+{{invited_by_name}} has invited you to join {{university_name}} on {{app_name}} as {{role}}.
+
+Accept the invitation and set your password:
+{{invitation_url}}
+
+This invitation was sent to {{recipient_email}} and expires on {{invitation_expires_at}}. If you weren't expecting it, you can safely ignore this email.
+
+---
+You received this email because {{invited_by_name}} added you to {{app_name}} ({{university_name}}).
+Questions? Email {{support_email}}.
+{{app_base_url}}
