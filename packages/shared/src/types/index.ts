@@ -23,3 +23,4 @@ export * from "./session.js";
 export * from "./disclosure.js";
 export * from "./parent.js";
 export * from "./legal.js";
+export * from "./escalation-contact.js";

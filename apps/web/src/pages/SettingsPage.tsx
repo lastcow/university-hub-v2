@@ -21,6 +21,7 @@ import {
   LogOut,
   Mail,
   Monitor,
+  PhoneCall,
   Scale,
   ShieldCheck,
   ShieldAlert,
@@ -31,6 +32,8 @@ import {
 import { Link } from "react-router-dom";
 
 import type {
+  EscalationContact,
+  EscalationContactsResponse,
   LegalAdminDocument,
   LegalAdminResponse,
   LegalDocumentKind,
@@ -59,6 +62,10 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/use-toast";
 import { ApiClientError } from "@/lib/api";
+import {
+  listEscalationContacts,
+  updateEscalationContact,
+} from "@/lib/escalation-contacts";
 import { getLegalAdmin, updateLegalDocument } from "@/lib/legal";
 import {
   disableMfa,
@@ -190,6 +197,8 @@ export function SettingsPage() {
       <ActiveSessionsSection />
 
       {canEditUniversity ? <LegalSection /> : null}
+
+      {user?.role === "super_admin" ? <EscalationContactsSection /> : null}
 
       <MailgunSection state={mailgun} />
     </div>
@@ -1361,6 +1370,351 @@ function LegalDocumentEditor({
           {error}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Escalation contacts (UNI-40) — runtime-configurable owners + escalation
+// table for the breach-response runbook (`docs/incident-response.md`).
+// Super_admin only — the SaaS operator's on-call entry shouldn't be silently
+// rewriteable by a customer's university_admin.
+// ---------------------------------------------------------------------------
+
+interface EscalationContactsState {
+  status: LoadStatus;
+  data?: EscalationContactsResponse;
+  error?: string;
+}
+
+function EscalationContactsSection() {
+  const [state, setState] = useState<EscalationContactsState>({
+    status: "idle",
+  });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setState({ status: "loading" });
+    listEscalationContacts(controller.signal)
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        setState({ status: "ok", data });
+      })
+      .catch((cause: unknown) => {
+        if (controller.signal.aborted) return;
+        setState({
+          status: "error",
+          error:
+            cause instanceof ApiClientError
+              ? cause.message
+              : "Could not load escalation contacts.",
+        });
+      });
+    return () => controller.abort();
+  }, []);
+
+  function applyUpdated(updated: EscalationContact) {
+    setState((prev) => {
+      if (prev.status !== "ok" || !prev.data) return prev;
+      const next = prev.data.contacts.map((c) =>
+        c.role_key === updated.role_key ? updated : c,
+      );
+      return {
+        ...prev,
+        data: {
+          contacts: next,
+          any_mockup: next.some((c) => c.is_mockup),
+        },
+      };
+    });
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <PhoneCall className="h-5 w-5 text-muted-foreground" />
+          <CardTitle>Owners &amp; escalation contacts</CardTitle>
+        </div>
+        <CardDescription>
+          Source of truth for the breach-response runbook (
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em]">
+            docs/incident-response.md
+          </code>
+          ). Replace every mockup row with real names, working emails, and
+          after-hours phone numbers before opening to real students. Edits are
+          audit-logged. Super-admin only.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {state.status === "loading" || state.status === "idle" ? (
+          <div className="space-y-3">
+            <Skeleton className="h-9 w-full" />
+            <Skeleton className="h-32 w-full" />
+          </div>
+        ) : state.status === "error" ? (
+          <ErrorState
+            title="Couldn't load escalation contacts"
+            description={state.error}
+          />
+        ) : state.data ? (
+          <>
+            {state.data.any_mockup ? (
+              <div
+                role="alert"
+                className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800/60 dark:bg-amber-900/30 dark:text-amber-100"
+              >
+                <strong>Launch blocker.</strong> One or more rows still carry
+                seeded mockup contents (RFC 2606 <code>*@example.*</code>{" "}
+                emails or the +1-555-01xx fictional phone range). Replace
+                every mockup row with real, callable contacts before opening
+                to real students. Per the runbook, finding mockup rows during
+                a real incident is itself an S2 finding.
+              </div>
+            ) : (
+              <div className="rounded-md border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900 dark:border-emerald-800/60 dark:bg-emerald-900/30 dark:text-emerald-100">
+                <strong>All rows populated with real contacts.</strong> Re-run
+                a tabletop drill (5 minutes — &ldquo;can I reach the FERPA
+                officer&rdquo;) when the lineup changes.
+              </div>
+            )}
+
+            <div className="space-y-3">
+              {state.data.contacts.map((contact) => (
+                <EscalationContactEditor
+                  key={contact.role_key}
+                  contact={contact}
+                  onUpdate={applyUpdated}
+                />
+              ))}
+            </div>
+          </>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function EscalationContactEditor({
+  contact,
+  onUpdate,
+}: {
+  contact: EscalationContact;
+  onUpdate: (updated: EscalationContact) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [roleLabel, setRoleLabel] = useState(contact.role_label);
+  const [personName, setPersonName] = useState(contact.person_name);
+  const [email, setEmail] = useState(contact.email);
+  const [phone, setPhone] = useState(contact.phone);
+  const [notes, setNotes] = useState(contact.notes);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!editing) {
+      setRoleLabel(contact.role_label);
+      setPersonName(contact.person_name);
+      setEmail(contact.email);
+      setPhone(contact.phone);
+      setNotes(contact.notes);
+      setFormError(null);
+      setFieldErrors({});
+    }
+  }, [contact, editing]);
+
+  async function onSave(event: FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    setFormError(null);
+    setFieldErrors({});
+    try {
+      const updated = await updateEscalationContact(contact.role_key, {
+        role_label: roleLabel,
+        person_name: personName,
+        email,
+        phone,
+        notes,
+      });
+      toast({
+        title: "Contact updated",
+        description: updated.is_mockup
+          ? `${updated.role_label} saved — still flagged as mockup. Replace example.* email or +1-555-01xx phone before launch.`
+          : `${updated.role_label} saved.`,
+        variant: updated.is_mockup ? "warning" : "success",
+      });
+      onUpdate(updated);
+      setEditing(false);
+    } catch (cause) {
+      handleFormError(cause, setFormError, setFieldErrors);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      className={
+        "rounded-md border p-4 " +
+        (contact.is_mockup
+          ? "border-amber-300/80 bg-amber-50/40 dark:border-amber-800/60 dark:bg-amber-950/20"
+          : "border-border")
+      }
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="space-y-1">
+          <p className="text-sm font-medium">{contact.role_label}</p>
+          <p className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
+            {contact.role_key}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {contact.is_mockup ? (
+            <Badge variant="warning">Mockup — replace before launch</Badge>
+          ) : (
+            <Badge variant="success">Real contact</Badge>
+          )}
+          {!editing ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setEditing(true)}
+            >
+              Edit
+            </Button>
+          ) : null}
+        </div>
+      </div>
+
+      {!editing ? (
+        <div className="mt-3 grid gap-1 text-sm sm:grid-cols-3">
+          <div className="sm:col-span-1">
+            <p className="text-xs text-muted-foreground">Name</p>
+            <p>{contact.person_name}</p>
+          </div>
+          <div className="sm:col-span-1">
+            <p className="text-xs text-muted-foreground">Email</p>
+            <p className="break-all">{contact.email}</p>
+          </div>
+          <div className="sm:col-span-1">
+            <p className="text-xs text-muted-foreground">After-hours phone</p>
+            <p>{contact.phone}</p>
+          </div>
+          {contact.notes ? (
+            <div className="sm:col-span-3">
+              <p className="text-xs text-muted-foreground">Notes</p>
+              <p className="text-sm text-foreground/90">{contact.notes}</p>
+            </div>
+          ) : null}
+          <div className="sm:col-span-3 text-xs text-muted-foreground">
+            Last updated {new Date(contact.updated_at).toLocaleString()}
+            {contact.updated_by_name ? ` by ${contact.updated_by_name}` : ""}.
+          </div>
+        </div>
+      ) : (
+        <form onSubmit={onSave} className="mt-3 space-y-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor={`ec-${contact.role_key}-label`}>
+                Role label
+              </Label>
+              <Input
+                id={`ec-${contact.role_key}-label`}
+                value={roleLabel}
+                onChange={(e) => setRoleLabel(e.target.value)}
+                disabled={saving}
+              />
+              {fieldErrors.role_label ? (
+                <p className="text-xs text-destructive">
+                  {fieldErrors.role_label}
+                </p>
+              ) : null}
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor={`ec-${contact.role_key}-name`}>Name</Label>
+              <Input
+                id={`ec-${contact.role_key}-name`}
+                value={personName}
+                onChange={(e) => setPersonName(e.target.value)}
+                disabled={saving}
+              />
+              {fieldErrors.person_name ? (
+                <p className="text-xs text-destructive">
+                  {fieldErrors.person_name}
+                </p>
+              ) : null}
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor={`ec-${contact.role_key}-email`}>Email</Label>
+              <Input
+                id={`ec-${contact.role_key}-email`}
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                disabled={saving}
+              />
+              {fieldErrors.email ? (
+                <p className="text-xs text-destructive">{fieldErrors.email}</p>
+              ) : null}
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor={`ec-${contact.role_key}-phone`}>
+                After-hours phone
+              </Label>
+              <Input
+                id={`ec-${contact.role_key}-phone`}
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                disabled={saving}
+                placeholder="+1-555-0142"
+              />
+              {fieldErrors.phone ? (
+                <p className="text-xs text-destructive">{fieldErrors.phone}</p>
+              ) : null}
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor={`ec-${contact.role_key}-notes`}>
+              Notes (optional)
+            </Label>
+            <textarea
+              id={`ec-${contact.role_key}-notes`}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              disabled={saving}
+              rows={2}
+              className="w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+            {fieldErrors.notes ? (
+              <p className="text-xs text-destructive">{fieldErrors.notes}</p>
+            ) : null}
+          </div>
+          {formError ? (
+            <div
+              role="alert"
+              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            >
+              {formError}
+            </div>
+          ) : null}
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setEditing(false)}
+              disabled={saving}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" size="sm" disabled={saving}>
+              {saving ? "Saving…" : "Save"}
+            </Button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }

@@ -70,6 +70,10 @@ import {
 } from "./routes/sessions.js";
 import { handleListEmailLogs } from "./routes/email-logs.js";
 import {
+  handleListEscalationContacts,
+  handleUpdateEscalationContact,
+} from "./routes/escalation-contacts.js";
+import {
   handleCreateCourse,
   handleCreateCourseAssignment,
   handleDeleteCourse,
@@ -183,6 +187,7 @@ const TEACHER_ASSISTANT_ID_RE =
 const SESSION_ID_RE = /^\/api\/auth\/sessions\/([0-9a-fA-F-]{36})\/?$/;
 const LEGAL_KIND_RE = /^\/api\/legal\/(terms|privacy)\/?$/;
 const LEGAL_ADMIN_KIND_RE = /^\/api\/legal\/admin\/(terms|privacy)\/?$/;
+const ESCALATION_CONTACT_RE = /^\/api\/escalation-contacts\/([a-z_]+)\/?$/;
 
 export default {
   async fetch(request, env): Promise<Response> {
@@ -424,6 +429,23 @@ async function routeApi(
     const legalKindMatch = LEGAL_KIND_RE.exec(url.pathname);
     if (legalKindMatch && request.method === "GET") {
       return handleGetLegalDocument(ctx, legalKindMatch[1] as string);
+    }
+
+    // Escalation contacts (UNI-40). Static path before the per-key regex
+    // so a request to `/api/escalation-contacts` doesn't get dropped on
+    // the floor by the path-parameter matcher.
+    if (
+      url.pathname === "/api/escalation-contacts" &&
+      request.method === "GET"
+    ) {
+      return handleListEscalationContacts(ctx);
+    }
+    const escalationContactMatch = ESCALATION_CONTACT_RE.exec(url.pathname);
+    if (escalationContactMatch && request.method === "PATCH") {
+      return handleUpdateEscalationContact(
+        ctx,
+        escalationContactMatch[1] as string,
+      );
     }
 
     // Logs admin (UNI-14). Read-only; RBAC + university scoping inside the
