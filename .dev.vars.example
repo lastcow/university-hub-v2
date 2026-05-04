@@ -1,0 +1,12 @@
+APP_ENV=development
+APP_NAME=University Hub
+APP_BASE_URL=http://localhost:5173
+
+SESSION_COOKIE_NAME=university_hub_session
+SESSION_SECRET=replace-with-local-secret
+
+MAILGUN_API_KEY=replace-with-mailgun-api-key
+MAILGUN_DOMAIN=replace-with-mailgun-domain
+MAILGUN_FROM_EMAIL=no-reply@example.com
+MAILGUN_FROM_NAME=University Hub
+MAILGUN_REGION=US

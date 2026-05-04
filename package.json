@@ -1,0 +1,20 @@
+{
+  "name": "university-hub-v2",
+  "private": true,
+  "version": "0.0.0",
+  "description": "University Hub v2 — SaaS-style university management platform on Cloudflare.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc -b --pretty",
+    "typecheck:clean": "tsc -b --clean"
+  },
+  "devDependencies": {
+    "typescript": "5.6.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
