@@ -90,11 +90,79 @@ curl http://127.0.0.1:8787/api/health
 
 ### Database (D1)
 
-For local dev, `wrangler dev --local` uses a sqlite file under `.wrangler/`
-(gitignored) — no Cloudflare account or live D1 needed. The `DB` binding is
-declared in `apps/worker/wrangler.toml`. Real migrations and seed land in a
-later issue under `migrations/` and are applied with
-`wrangler d1 migrations apply DB`.
+D1 is SQLite under the hood. Schema lives in SQL migrations under
+`migrations/` at the repo root and is applied with `wrangler d1 migrations
+apply DB`. `apps/worker/wrangler.toml` sets `migrations_dir = "../../migrations"`
+so wrangler picks them up from there.
+
+Migration files (in order):
+
+| File                              | What it does                                                       |
+|-----------------------------------|--------------------------------------------------------------------|
+| `migrations/0001_initial_schema.sql` | All core tables + indexes (epic UNI-1 §18, §19).                |
+| `migrations/0002_email_logs.sql`     | `email_logs` table for Mailgun delivery tracking + indexes.     |
+| `migrations/0003_seed_dev_data.sql`  | Demo university, super_admin, demo users for each role, demo departments and courses. **Dev only.** |
+
+Type conventions:
+- UUIDs are `TEXT` (generated in the Worker via `crypto.randomUUID()`).
+- Timestamps are ISO-8601 `TEXT` in UTC.
+- Status enums are `TEXT` with `CHECK` constraints.
+
+See [`docs/database.md`](docs/database.md) for the full rationale (UUID-as-TEXT
+choice, FK enforcement via `PRAGMA foreign_keys`, password hashing format).
+
+#### Apply migrations
+
+From the repo root:
+
+```bash
+# Local — uses a sqlite file under apps/worker/.wrangler/. No Cloudflare
+# account or live D1 needed. This also seeds dev data via 0003_*.sql.
+npm run db:migrate:local
+
+# Production — applies against the real D1 database. Skips 0003 only if you
+# remove it from the migrations dir before deploy; the seed migration is
+# safe to ship in dev environments but should NOT be applied in production.
+npm run db:migrate
+```
+
+#### Sanity check
+
+```bash
+npm run db:exec:local -- --command "SELECT count(*) AS n FROM users"
+npm run db:exec:local -- --command "SELECT email, role FROM users ORDER BY role"
+```
+
+#### Reset local DB
+
+```bash
+rm -rf apps/worker/.wrangler
+npm run db:migrate:local
+```
+
+#### Dev super_admin login
+
+The seed creates a super_admin and one demo user per role (all share the same
+dev password). These creds are dev-only.
+
+| Field    | Value                  |
+|----------|------------------------|
+| Email    | `superadmin@dev.local` |
+| Password | `DevSuperAdmin!2026`   |
+
+Other dev users follow `<role>@dev.local` with the same password
+(`uniadmin@dev.local`, `staff@dev.local`, `faculty@dev.local`,
+`teacher@dev.local`, `ta@dev.local`, `student@dev.local`, `guest@dev.local`,
+`viewer@dev.local`).
+
+#### Hashing a new password (bootstrap / production super_admin)
+
+Real auth lands in UNI-6, but the PBKDF2-SHA256 path is already in place.
+Generate a hash compatible with the Worker auth module:
+
+```bash
+node scripts/hash-password.mjs '<password>'
+```
 
 ## Cloudflare setup
 
