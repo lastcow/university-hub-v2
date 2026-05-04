@@ -28,6 +28,13 @@ import {
 } from "./routes/disclosures.js";
 import { handleListGradeAccessLog } from "./routes/grade-access-log.js";
 import {
+  handleAcceptLegal,
+  handleGetAcknowledgmentStatus,
+  handleGetLegalAdmin,
+  handleGetLegalDocument,
+  handleUpdateLegalDocument,
+} from "./routes/legal.js";
+import {
   handleParentGrades,
   handleParentMe,
   handleParentSignInRequest,
@@ -174,6 +181,8 @@ const TEACHER_ID_RE =
 const TEACHER_ASSISTANT_ID_RE =
   /^\/api\/teacher-assistants\/([0-9a-fA-F-]{36})(?:\/(courses))?\/?$/;
 const SESSION_ID_RE = /^\/api\/auth\/sessions\/([0-9a-fA-F-]{36})\/?$/;
+const LEGAL_KIND_RE = /^\/api\/legal\/(terms|privacy)\/?$/;
+const LEGAL_ADMIN_KIND_RE = /^\/api\/legal\/admin\/(terms|privacy)\/?$/;
 
 export default {
   async fetch(request, env): Promise<Response> {
@@ -391,6 +400,30 @@ async function routeApi(
       request.method === "PATCH"
     ) {
       return handleUpdateAccountSettings(ctx);
+    }
+
+    // Privacy policy + ToS surfaces (UNI-34). Static admin paths (and the
+    // acknowledgment-status / accept routes) come before the generic
+    // `/api/legal/:kind` regex so they don't get swallowed by it.
+    if (
+      url.pathname === "/api/legal/acknowledgment-status" &&
+      request.method === "GET"
+    ) {
+      return handleGetAcknowledgmentStatus(ctx);
+    }
+    if (url.pathname === "/api/legal/accept" && request.method === "POST") {
+      return handleAcceptLegal(ctx);
+    }
+    if (url.pathname === "/api/legal/admin" && request.method === "GET") {
+      return handleGetLegalAdmin(ctx);
+    }
+    const legalAdminMatch = LEGAL_ADMIN_KIND_RE.exec(url.pathname);
+    if (legalAdminMatch && request.method === "PATCH") {
+      return handleUpdateLegalDocument(ctx, legalAdminMatch[1] as string);
+    }
+    const legalKindMatch = LEGAL_KIND_RE.exec(url.pathname);
+    if (legalKindMatch && request.method === "GET") {
+      return handleGetLegalDocument(ctx, legalKindMatch[1] as string);
     }
 
     // Logs admin (UNI-14). Read-only; RBAC + university scoping inside the

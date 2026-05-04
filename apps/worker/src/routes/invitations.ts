@@ -673,12 +673,38 @@ export async function handleAcceptInvitation(ctx: RequestContext): Promise<Respo
   const passwordHash = await hashPassword(password);
   const now = new Date().toISOString();
 
+  // Resolve the ToS / Privacy versions in force for this customer so we can
+  // stamp `terms_accepted_version` at create-time (UNI-34). Falls back to
+  // version 1 / the seeded boilerplate when no row exists yet.
+  const termsVersion = await currentLegalVersion(
+    ctx.env.DB,
+    row.university_id,
+    "terms",
+  );
+  const privacyVersion = await currentLegalVersion(
+    ctx.env.DB,
+    row.university_id,
+    "privacy",
+  );
+
   await execute(
     ctx.env.DB,
     `INSERT INTO users (id, email, password_hash, name, role, status, university_id,
-                        last_sign_in_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?)`,
-    [userId, row.email, passwordHash, name, row.role, row.university_id, now, now],
+                        last_sign_in_at, created_at, updated_at,
+                        terms_accepted_at, terms_accepted_version)
+     VALUES (?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?)`,
+    [
+      userId,
+      row.email,
+      passwordHash,
+      name,
+      row.role,
+      row.university_id,
+      now,
+      now,
+      now,
+      termsVersion,
+    ],
   );
   await execute(
     ctx.env.DB,
@@ -701,6 +727,18 @@ export async function handleAcceptInvitation(ctx: RequestContext): Promise<Respo
     entityType: "user",
     entityId: userId,
     metadata: { source: "invitation_accept", role: row.role },
+  });
+  await writeAuditLog(ctx.env.DB, {
+    action: "legal.terms_accepted",
+    actorUserId: userId,
+    universityId: row.university_id,
+    entityType: "user",
+    entityId: userId,
+    metadata: {
+      terms_version: termsVersion,
+      privacy_version: privacyVersion,
+      source: "invitation_accept",
+    },
   });
 
   // Welcome email — failure is non-blocking (logged in `email_logs`).
@@ -820,6 +858,36 @@ async function fetchUniversityName(
     [universityId],
   );
   return row?.name ?? null;
+}
+
+/**
+ * Resolve the ToS / Privacy version in force for a given customer at
+ * invitation-accept time (UNI-34). The lookup is `customer override →
+ * global default → "1" if neither exists`. Stamping the user's
+ * `terms_accepted_version` at create time keeps the in-app gate logic
+ * symmetric (same compare regardless of which path created the user).
+ */
+async function currentLegalVersion(
+  db: D1Database,
+  universityId: string | null,
+  kind: "terms" | "privacy",
+): Promise<number> {
+  if (universityId) {
+    const customer = await queryFirst<{ version: number }>(
+      db,
+      `SELECT version FROM legal_documents
+        WHERE university_id = ? AND kind = ? LIMIT 1`,
+      [universityId, kind],
+    );
+    if (customer) return customer.version;
+  }
+  const global = await queryFirst<{ version: number }>(
+    db,
+    `SELECT version FROM legal_documents
+      WHERE university_id IS NULL AND kind = ? LIMIT 1`,
+    [kind],
+  );
+  return global?.version ?? 1;
 }
 
 async function loadInvitationRow(

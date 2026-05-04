@@ -19,6 +19,15 @@ export const acceptInvitationInputSchema = z
     name: z.string().trim().min(1, "Name is required"),
     password: passwordSchema,
     confirmPassword: passwordSchema,
+    // Privacy + ToS acknowledgment (UNI-34). The form must be checked
+    // before the backend will create the account; the backend records
+    // the latest current ToS / Privacy version into
+    // `users.terms_accepted_at` / `users.terms_accepted_version`.
+    terms_accepted: z.literal(true, {
+      errorMap: () => ({
+        message: "You must agree to the Terms and Privacy Policy.",
+      }),
+    }),
   })
   .refine((data) => data.password === data.confirmPassword, {
     path: ["confirmPassword"],

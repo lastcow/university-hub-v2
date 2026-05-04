@@ -4,6 +4,7 @@ import { Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "@/auth/AuthContext";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 
+import { LegalAcknowledgmentGate } from "./LegalAcknowledgmentGate";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 
@@ -39,6 +40,7 @@ export function AppShell() {
           <Outlet />
         </main>
       </div>
+      <LegalAcknowledgmentGate />
     </div>
   );
 }

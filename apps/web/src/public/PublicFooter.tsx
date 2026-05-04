@@ -64,6 +64,27 @@ export function PublicFooter() {
             </li>
           </ul>
         </nav>
+
+        <nav aria-label="Legal">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Legal
+          </h2>
+          <ul className="mt-3 space-y-2">
+            <li>
+              <Link
+                to="/privacy"
+                className="text-foreground hover:text-primary"
+              >
+                Privacy Policy
+              </Link>
+            </li>
+            <li>
+              <Link to="/terms" className="text-foreground hover:text-primary">
+                Terms of Service
+              </Link>
+            </li>
+          </ul>
+        </nav>
       </div>
       <div className="border-t">
         <div className="mx-auto flex w-full max-w-6xl flex-col gap-2 px-4 py-4 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between lg:px-6">

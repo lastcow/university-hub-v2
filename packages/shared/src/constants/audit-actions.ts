@@ -44,6 +44,8 @@ export const AUDIT_ACTIONS = [
   "mfa.disabled",
   "mfa.recovery_code_used",
   "mfa.recovery_codes_regenerated",
+  "legal.terms_accepted",
+  "legal.document_updated",
 ] as const;
 
 export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
@@ -90,6 +92,8 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "mfa.disabled": "MFA disabled",
   "mfa.recovery_code_used": "MFA recovery code used",
   "mfa.recovery_codes_regenerated": "MFA recovery codes regenerated",
+  "legal.terms_accepted": "Terms accepted",
+  "legal.document_updated": "Legal document updated",
 };
 
 /**
@@ -114,7 +118,8 @@ export type AuditActionCategory =
   | "directory_info"
   | "disclosure_consent"
   | "disclosure"
-  | "parent";
+  | "parent"
+  | "legal";
 
 export function auditActionCategory(action: AuditAction): AuditActionCategory {
   return action.split(".")[0] as AuditActionCategory;
