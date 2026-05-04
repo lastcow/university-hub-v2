@@ -73,6 +73,10 @@ const CATEGORY_VARIANTS: Record<AuditActionCategory, BadgeProps["variant"]> = {
   email: "warning",
   settings: "secondary",
   mfa: "secondary",
+  directory_info: "default",
+  disclosure_consent: "default",
+  disclosure: "warning",
+  parent: "secondary",
 };
 
 function ActionBadge({ action }: { action: AuditAction }) {

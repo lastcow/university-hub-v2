@@ -230,6 +230,12 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         roles: ADMIN_ONLY,
       },
       {
+        label: "Disclosures",
+        to: "/app/disclosures",
+        icon: ClipboardList,
+        roles: ADMIN_ONLY,
+      },
+      {
         label: "Email logs",
         to: "/app/email-logs",
         icon: Mail,

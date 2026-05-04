@@ -65,6 +65,7 @@ export const EMAIL_TYPES = [
   "password_reset",
   "contact_notification",
   "account_status_changed",
+  "parent_sign_in",
 ] as const;
 
 export const EMAIL_TYPE_LABELS: Record<(typeof EMAIL_TYPES)[number], string> = {
@@ -74,6 +75,7 @@ export const EMAIL_TYPE_LABELS: Record<(typeof EMAIL_TYPES)[number], string> = {
   password_reset: "Password reset",
   contact_notification: "Contact notification",
   account_status_changed: "Account status changed",
+  parent_sign_in: "Parent sign-in",
 };
 
 export const EMAIL_LOG_STATUS_LABELS: Record<

@@ -15,6 +15,9 @@ import { CourseNewPage } from "@/pages/CourseNewPage";
 import { GradeAccessLogPage } from "@/pages/GradeAccessLogPage";
 import { CoursesPage } from "@/pages/CoursesPage";
 import { DashboardPage } from "@/pages/DashboardPage";
+import { DisclosuresPage } from "@/pages/DisclosuresPage";
+import { ParentDashboardPage } from "@/pages/ParentDashboardPage";
+import { ParentSignInPage } from "@/pages/ParentSignInPage";
 import { DepartmentDetailPage } from "@/pages/DepartmentDetailPage";
 import { DepartmentEditPage } from "@/pages/DepartmentEditPage";
 import { DepartmentNewPage } from "@/pages/DepartmentNewPage";
@@ -62,6 +65,8 @@ export default function App() {
       <AuthProvider>
         <Routes>
           <Route path="/sign-in" element={<SignInPage />} />
+          <Route path="/sign-in/parent" element={<ParentSignInPage />} />
+          <Route path="/parent" element={<ParentDashboardPage />} />
           <Route path="/accept-invitation" element={<AcceptInvitationPage />} />
           <Route
             path="/app"
@@ -140,6 +145,7 @@ export default function App() {
               path="audit-logs/grade-access"
               element={<GradeAccessLogPage />}
             />
+            <Route path="disclosures" element={<DisclosuresPage />} />
             <Route path="email-logs" element={<EmailLogsPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="ux" element={<UxStatesPage />} />

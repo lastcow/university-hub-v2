@@ -17,7 +17,23 @@ import {
   handleUpdateAssessment,
 } from "./routes/assessments.js";
 import { handleListAuditLogs } from "./routes/audit-logs.js";
+import {
+  handleCreateDisclosureConsent,
+  handleListDisclosureConsents,
+  handleRevokeDisclosureConsent,
+} from "./routes/disclosure-consents.js";
+import {
+  handleListDisclosures,
+  handleRecordDisclosure,
+} from "./routes/disclosures.js";
 import { handleListGradeAccessLog } from "./routes/grade-access-log.js";
+import {
+  handleParentGrades,
+  handleParentMe,
+  handleParentSignInRequest,
+  handleParentSignInVerify,
+  handleParentSignOut,
+} from "./routes/parent-auth.js";
 import {
   handleCreateGrade,
   handleListCourseGrades,
@@ -83,6 +99,7 @@ import {
   handleGetStudent,
   handleListMyStudentCourses,
   handleListStudents,
+  handleUpdateStudentDirectoryInfo,
 } from "./routes/students.js";
 import {
   handleGetMyTeacherAssistant,
@@ -145,7 +162,11 @@ const ASSESSMENT_ID_RE = /^\/api\/assessments\/([0-9a-fA-F-]{36})\/?$/;
 const GRADE_ID_RE = /^\/api\/grades\/([0-9a-fA-F-]{36})\/?$/;
 const STUDENT_GRADES_RE =
   /^\/api\/students\/([0-9a-fA-F-]{36})\/grades\/?$/;
+const STUDENT_DIRECTORY_INFO_RE =
+  /^\/api\/students\/([0-9a-fA-F-]{36})\/directory-info\/?$/;
 const STUDENT_ID_RE = /^\/api\/students\/([0-9a-fA-F-]{36})\/?$/;
+const DISCLOSURE_CONSENT_REVOKE_RE =
+  /^\/api\/disclosure-consents\/([0-9a-fA-F-]{36})\/revoke\/?$/;
 const FACULTY_ID_RE = /^\/api\/faculty\/([0-9a-fA-F-]{36})\/?$/;
 const TEACHER_ID_RE =
   /^\/api\/teachers\/([0-9a-fA-F-]{36})(?:\/(courses|students))?\/?$/;
@@ -367,6 +388,61 @@ async function routeApi(
       return handleListGradeAccessLog(ctx);
     }
 
+    // FERPA controls (UNI-32). Disclosure consents + disclosure log + parent
+    // sign-in. Static paths first so the per-id regexes don't try to swallow
+    // `/revoke`, `/sign-in/...`, etc. as UUIDs.
+    if (
+      url.pathname === "/api/disclosure-consents" &&
+      request.method === "GET"
+    ) {
+      return handleListDisclosureConsents(ctx);
+    }
+    if (
+      url.pathname === "/api/disclosure-consents" &&
+      request.method === "POST"
+    ) {
+      return handleCreateDisclosureConsent(ctx);
+    }
+    const disclosureConsentRevokeMatch = DISCLOSURE_CONSENT_REVOKE_RE.exec(
+      url.pathname,
+    );
+    if (disclosureConsentRevokeMatch && request.method === "POST") {
+      return handleRevokeDisclosureConsent(
+        ctx,
+        disclosureConsentRevokeMatch[1] as string,
+      );
+    }
+    if (url.pathname === "/api/disclosures" && request.method === "GET") {
+      return handleListDisclosures(ctx);
+    }
+    if (url.pathname === "/api/disclosures" && request.method === "POST") {
+      return handleRecordDisclosure(ctx);
+    }
+
+    // Parent / guardian sign-in surface (UNI-32). The parent has no `users`
+    // row; a separate cookie + session table backs every endpoint here.
+    if (
+      url.pathname === "/api/parent/sign-in/request" &&
+      request.method === "POST"
+    ) {
+      return handleParentSignInRequest(ctx);
+    }
+    if (
+      url.pathname === "/api/parent/sign-in/verify" &&
+      request.method === "POST"
+    ) {
+      return handleParentSignInVerify(ctx);
+    }
+    if (url.pathname === "/api/parent/sign-out" && request.method === "POST") {
+      return handleParentSignOut(ctx);
+    }
+    if (url.pathname === "/api/parent/me" && request.method === "GET") {
+      return handleParentMe(ctx);
+    }
+    if (url.pathname === "/api/parent/grades" && request.method === "GET") {
+      return handleParentGrades(ctx);
+    }
+
     // Invitation routes. Static paths first so the id-matching regex below
     // doesn't try to interpret e.g. `accept` / `lookup` as a UUID.
     if (url.pathname === "/api/invitations" && request.method === "GET") {
@@ -570,6 +646,16 @@ async function routeApi(
     const studentGradesMatch = STUDENT_GRADES_RE.exec(url.pathname);
     if (studentGradesMatch && request.method === "GET") {
       return handleListStudentGrades(ctx, studentGradesMatch[1] as string);
+    }
+    // FERPA directory-info opt-out PATCH (UNI-32). Same precedence rule.
+    const studentDirectoryInfoMatch = STUDENT_DIRECTORY_INFO_RE.exec(
+      url.pathname,
+    );
+    if (studentDirectoryInfoMatch && request.method === "PATCH") {
+      return handleUpdateStudentDirectoryInfo(
+        ctx,
+        studentDirectoryInfoMatch[1] as string,
+      );
     }
     const studentMatch = STUDENT_ID_RE.exec(url.pathname);
     if (studentMatch && request.method === "GET") {
