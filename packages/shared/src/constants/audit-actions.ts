@@ -28,6 +28,13 @@ export const AUDIT_ACTIONS = [
   "grade.created",
   "grade.changed",
   "analytics.viewed",
+  "directory_info.updated",
+  "disclosure_consent.granted",
+  "disclosure_consent.revoked",
+  "disclosure.released",
+  "parent.sign_in_requested",
+  "parent.sign_in_verified",
+  "parent.sign_out",
   "email.sent",
   "email.failed",
   "settings.updated",
@@ -67,6 +74,13 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "grade.created": "Grade recorded",
   "grade.changed": "Grade changed",
   "analytics.viewed": "Course analytics viewed",
+  "directory_info.updated": "Directory-info opt-out updated",
+  "disclosure_consent.granted": "Disclosure consent granted",
+  "disclosure_consent.revoked": "Disclosure consent revoked",
+  "disclosure.released": "Disclosure released",
+  "parent.sign_in_requested": "Parent sign-in token requested",
+  "parent.sign_in_verified": "Parent sign-in verified",
+  "parent.sign_out": "Parent sign-out",
   "email.sent": "Email sent",
   "email.failed": "Email failed",
   "settings.updated": "Settings updated",
@@ -96,7 +110,11 @@ export type AuditActionCategory =
   | "analytics"
   | "email"
   | "settings"
-  | "mfa";
+  | "mfa"
+  | "directory_info"
+  | "disclosure_consent"
+  | "disclosure"
+  | "parent";
 
 export function auditActionCategory(action: AuditAction): AuditActionCategory {
   return action.split(".")[0] as AuditActionCategory;

@@ -223,3 +223,20 @@ export async function sendAccountStatusChangedEmail(
     options: opts.options,
   });
 }
+
+export async function sendParentSignInEmail(
+  env: Env,
+  input: SendBaseInput,
+  opts: SendOptions = {},
+): Promise<SendResult> {
+  return dispatch({
+    env,
+    type: "parent_sign_in",
+    templateName: MAILGUN_TEMPLATES.parent_sign_in,
+    to: input.to,
+    variables: mergeVariables(env, input.to, input.variables),
+    universityId: input.universityId,
+    relatedEntity: input.relatedEntity ?? null,
+    options: opts.options,
+  });
+}

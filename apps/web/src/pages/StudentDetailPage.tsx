@@ -1,6 +1,7 @@
 // /app/students/:id — student profile (epic UNI-1 §9, UNI-13).
 // Read-only. Backend allows the student themselves OR any directory viewer
-// in their university.
+// in their university. Admin/staff also see the FERPA controls (UNI-32):
+// the directory-info opt-out badge and the parent_guardian_email field.
 
 import { useEffect, useState } from "react";
 import { ArrowLeft } from "lucide-react";
@@ -8,6 +9,8 @@ import { Link, useParams } from "react-router-dom";
 
 import type { StudentListItem } from "@university-hub/shared";
 
+import { useAuth } from "@/auth/AuthContext";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -27,8 +30,15 @@ interface State {
   error?: string;
 }
 
+const FERPA_VISIBLE_ROLES: ReadonlySet<string> = new Set([
+  "super_admin",
+  "university_admin",
+  "staff",
+]);
+
 export function StudentDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const { user } = useAuth();
   const [state, setState] = useState<State>({ status: "loading" });
 
   useEffect(() => {
@@ -53,6 +63,8 @@ export function StudentDetailPage() {
     return () => controller.abort();
   }, [id]);
 
+  const showFerpa = user ? FERPA_VISIBLE_ROLES.has(user.role) : false;
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-2">
@@ -75,7 +87,13 @@ export function StudentDetailPage() {
       ) : state.data ? (
         <Card>
           <CardHeader>
-            <CardTitle>{state.data.name}</CardTitle>
+            <CardTitle className="flex flex-wrap items-center gap-2">
+              {state.data.name}
+              {state.data.directory_info_opt_out ? (
+                <Badge variant="warning">Directory opt-out</Badge>
+              ) : null}
+              {state.data.under_18 ? <Badge variant="secondary">Under 18</Badge> : null}
+            </CardTitle>
             <CardDescription>{state.data.email}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-muted-foreground">
@@ -97,6 +115,14 @@ export function StudentDetailPage() {
                 {state.data.university_name ?? "—"}
               </span>
             </div>
+            {showFerpa ? (
+              <div>
+                Parent / guardian email:{" "}
+                <span className="text-foreground">
+                  {state.data.parent_guardian_email ?? "—"}
+                </span>
+              </div>
+            ) : null}
             <div className="rounded-md border border-dashed bg-muted/40 p-3 text-xs">
               Course associations land in a future iteration — for now, see the
               student's enrolment via the course detail page.

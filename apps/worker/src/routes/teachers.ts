@@ -59,6 +59,9 @@ type StudentRow = Row & {
   university_id: string;
   department_id: string | null;
   student_number: string | null;
+  directory_info_opt_out: number;
+  under_18: number;
+  parent_guardian_email: string | null;
   created_at: string;
   updated_at: string;
   name: string;
@@ -100,6 +103,7 @@ const SELECT_TEACHER_COURSES = `
 // Distinct students assigned to any of the courses where the teacher teaches.
 const SELECT_TEACHER_STUDENTS = `
   SELECT DISTINCT s.id, s.user_id, s.university_id, s.department_id, s.student_number,
+         s.directory_info_opt_out, s.under_18, s.parent_guardian_email,
          s.created_at, s.updated_at,
          u.name AS name, u.email AS email,
          un.name AS university_name,
@@ -161,6 +165,9 @@ function toStudent(row: StudentRow): StudentListItem {
     university_id: row.university_id,
     department_id: row.department_id,
     student_number: row.student_number,
+    directory_info_opt_out: Boolean(row.directory_info_opt_out),
+    under_18: Boolean(row.under_18),
+    parent_guardian_email: row.parent_guardian_email,
     created_at: row.created_at,
     updated_at: row.updated_at,
     name: row.name,

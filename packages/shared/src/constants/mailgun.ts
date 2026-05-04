@@ -5,6 +5,7 @@ export const MAILGUN_TEMPLATES = {
   password_reset: "university_hub_password_reset",
   contact_notification: "university_hub_contact_notification",
   account_status_changed: "university_hub_account_status_changed",
+  parent_sign_in: "university_hub_parent_sign_in",
 } as const;
 
 export type MailgunTemplateKey = keyof typeof MAILGUN_TEMPLATES;

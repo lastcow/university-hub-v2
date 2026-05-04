@@ -20,3 +20,5 @@ export * from "./dashboard.js";
 export * from "./settings.js";
 export * from "./mfa.js";
 export * from "./session.js";
+export * from "./disclosure.js";
+export * from "./parent.js";
