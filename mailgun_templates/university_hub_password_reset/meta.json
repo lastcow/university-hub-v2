@@ -1,0 +1,13 @@
+{
+  "description": "Sent when a user requests a password reset. Carries a single-use, short-lived link to a reset form.",
+  "tags": ["transactional", "password_reset", "university_hub"],
+  "engine": "handlebars",
+  "variables": [
+    "app_name",
+    "recipient_name",
+    "recipient_email",
+    "reset_password_url",
+    "support_email",
+    "app_base_url"
+  ]
+}

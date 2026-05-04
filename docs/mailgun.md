@@ -5,10 +5,13 @@ welcome, password reset, contact-form notification, account-status change. No
 other email provider is supported (epic UNI-1 §3) and no email is ever sent
 directly from the frontend (epic §13).
 
-> **HTML lives in Mailgun, not in this repo.** The Worker only ships the
-> template **name** + a flat dictionary of variables. Mailgun's template
-> engine (Handlebars) renders the body. To change the look of an email, edit
-> the template in the Mailgun dashboard — no redeploy needed.
+> **HTML lives in this repo, Mailgun is a downstream copy.** The Worker only
+> ships the template **name** + a flat dictionary of variables; Mailgun's
+> Handlebars engine renders the body. The canonical HTML for every template
+> sits under `mailgun_templates/<name>/index.html` and is pushed to Mailgun
+> via `npm run sync:mailgun-templates`. To change the look of an email, edit
+> the file in this repo and re-run the script — do **not** edit on the
+> Mailgun dashboard, those edits will be overwritten on the next sync.
 
 ## Setup checklist
 
@@ -19,8 +22,10 @@ directly from the frontend (epic §13).
    to complete before sending real mail.
 3. **Generate a private API key.** Mailgun → Account Settings → API Keys →
    *Private API key*. Treat this as a secret; never commit it.
-4. **Author the six templates** (see "Templates" below). Make sure each one
-   exists with **exactly** the names listed — the Worker calls them by name.
+4. **Sync the six templates** from this repo with
+   `npm run sync:mailgun-templates` (see "Templates" and "Authoring &
+   syncing templates" below). The script creates any missing templates and
+   pushes a new active version when local HTML differs from the Mailgun copy.
 5. **Provision the Worker secrets** with `wrangler secret put` (see
    "Worker env vars" below).
 6. **Smoke-test.** Sign in to the deployed app as a super_admin, create a
@@ -80,8 +85,9 @@ but the attempt is still recorded in `email_logs` with that reason.
 
 ## Required templates (epic §13)
 
-Authored in the Mailgun dashboard under **Sending → Templates**. The names
-must match exactly — the Worker references them by name from
+Authored in this repo under `mailgun_templates/<name>/index.html` and pushed
+to Mailgun by `npm run sync:mailgun-templates`. The names must match exactly
+— the Worker references them by name from
 `packages/shared/src/constants/mailgun.ts`.
 
 | Template name                          | Sent when                                                                 |
@@ -93,8 +99,69 @@ must match exactly — the Worker references them by name from
 | `university_hub_contact_notification`  | A visitor submits the public `/contact` form.                             |
 | `university_hub_account_status_changed`| An admin activates / deactivates / suspends an account.                   |
 
-For each template, set both the HTML and plain-text bodies (Mailgun renders
-both). Subject lines live in Mailgun and can reference the same variables.
+The HTML body is the only thing Mailgun stores. A plaintext fallback is
+authored alongside as `index.txt` and committed for review and future use,
+but is not currently uploaded — see "Plaintext fallback" below. Subject
+lines are configured in the Mailgun dashboard and can reference the same
+template variables.
+
+## Authoring & syncing templates
+
+Source of truth: `mailgun_templates/<template_name>/`, with three files per
+template:
+
+```
+mailgun_templates/
+  university_hub_invitation/
+    index.html   # HTML body uploaded to Mailgun (Handlebars: {{var}})
+    index.txt    # plaintext fallback (kept in repo)
+    meta.json    # { description, tags, engine, variables }
+```
+
+Author email-safe HTML — single column, ~600px max width, table-based
+layout, inline styles only. Match the `/app` shell visual language: neutral
+zinc palette, calm typography, rounded buttons. Use Handlebars-style
+variables (`{{recipient_name}}`); the variable contract per template is
+both in this doc and in `meta.json`.
+
+To push local changes to Mailgun:
+
+```bash
+npm run sync:mailgun-templates
+```
+
+The script (`scripts/sync-mailgun-templates.mjs`):
+
+- Reads `MAILGUN_API_KEY`, `MAILGUN_DOMAIN`, optionally `MAILGUN_REGION`
+  from `process.env` first, falling back to `apps/worker/.dev.vars`. The
+  same names the Worker uses — no parallel naming.
+- For each template directory:
+  - **No remote template** ⇒ creates it (`POST /v3/<domain>/templates`)
+    with the local HTML as the initial active version.
+  - **Remote template exists, body matches** ⇒ reports `unchanged` and
+    makes no further API call.
+  - **Remote template exists, body differs** ⇒ uploads a new active version
+    (`POST /v3/<domain>/templates/<name>/versions`) tagged with a short
+    hash of the new HTML so re-runs can detect "already pushed".
+- Idempotent — safe to re-run after every edit. Exits non-zero only when
+  one or more templates fail to sync.
+
+The script never echoes the API key; failures print sanitized messages.
+Never commit a real API key to docs, `.env.example`, or any file under
+`mailgun_templates/`.
+
+### Plaintext fallback
+
+`index.txt` is the human-authored plaintext alternative. It is **not**
+uploaded to Mailgun today — Mailgun stored templates carry only an HTML
+body. The file is committed so:
+
+- Future Worker changes can read it and pass it as `text=` on the message
+  send (Mailgun supports `html` + `text` together for richer fallbacks).
+- It documents the intended plain-text rendering for code review.
+
+Current sends rely on Mailgun's HTML body alone; clients that strip HTML
+will see whatever Mailgun's auto-text or the user's reader app renders.
 
 ## Template variables
 
@@ -250,3 +317,9 @@ dev:worker`.
 - **Seeing `mailgun_http_error` with status 404 + "domain not found":**
   the `MAILGUN_DOMAIN` does not exist in the region you're calling. Check
   the dashboard region selector or set `MAILGUN_REGION=EU`.
+- **`Template not found` in the Mailgun events feed:** the template wasn't
+  pushed to this domain. Run `npm run sync:mailgun-templates` against the
+  same `MAILGUN_DOMAIN` and re-send. Mailgun will accept these sends with
+  HTTP 200 + a real `mailgun_message_id`, then bounce asynchronously — the
+  Worker's synchronous response can't catch it, so `email_logs` reads
+  `status = sent` while the recipient never gets the email.

@@ -1,0 +1,18 @@
+{{app_name}}
+
+Your account status changed
+
+Hi {{recipient_name}},
+
+An administrator just updated the status of your {{app_name}} account at {{recipient_email}}.
+
+Account: {{recipient_email}}
+New status: {{account_status}}
+
+If this was unexpected, or you believe it was a mistake, reply to this email or contact {{support_email}}.
+
+Open {{app_name}}: {{app_base_url}}
+
+---
+You received this email because your account at {{recipient_email}} was administered on {{app_name}}. Questions? Email {{support_email}}.
+{{app_base_url}}

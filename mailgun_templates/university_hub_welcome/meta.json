@@ -1,0 +1,14 @@
+{
+  "description": "Sent immediately after a user accepts an invitation. Confirms their account is ready and links to the app.",
+  "tags": ["transactional", "welcome", "university_hub"],
+  "engine": "handlebars",
+  "variables": [
+    "app_name",
+    "recipient_name",
+    "recipient_email",
+    "university_name",
+    "role",
+    "support_email",
+    "app_base_url"
+  ]
+}

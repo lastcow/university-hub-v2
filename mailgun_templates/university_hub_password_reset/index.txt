@@ -1,0 +1,14 @@
+{{app_name}}
+
+Reset your password
+
+Hi {{recipient_name}},
+
+Someone — hopefully you — asked to reset the password for the {{app_name}} account at {{recipient_email}}. Use the link below to set a new password. The link expires in a few minutes.
+
+{{reset_password_url}}
+
+If you didn't request a password reset, you can safely ignore this email — your current password will keep working. If you're worried about account access, contact {{support_email}}.
+
+---
+{{app_name}} · {{app_base_url}}

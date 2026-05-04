@@ -1,0 +1,13 @@
+{
+  "description": "Sent when an admin activates, deactivates, or suspends a user account. The account_status variable holds the UI label of the new status.",
+  "tags": ["transactional", "account", "university_hub"],
+  "engine": "handlebars",
+  "variables": [
+    "app_name",
+    "recipient_name",
+    "recipient_email",
+    "account_status",
+    "support_email",
+    "app_base_url"
+  ]
+}

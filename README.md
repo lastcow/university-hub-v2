@@ -17,8 +17,10 @@ day-to-day operator handbook.
   is API-only; anything outside `/api/*` returns a JSON 404.
 - **Database:** Cloudflare D1 (SQLite) via `env.DB`. SQL migrations under
   `migrations/` at the repo root, applied with `wrangler d1 migrations apply`.
-- **Email:** Mailgun (templates managed in the Mailgun dashboard, never in
-  code). The Worker only ships template name + variables — never raw HTML.
+- **Email:** Mailgun. Template HTML is canonical in this repo under
+  `mailgun_templates/` and pushed to the Mailgun account by
+  `npm run sync:mailgun-templates`. The Worker only ships template name +
+  variables — never raw HTML.
 - **Auth:** Email + password, PBKDF2-SHA256 hashing via Web Crypto, SHA-256
   hashed session tokens. HttpOnly cookies, `SameSite=None; Secure` in
   production (cross-site SPA → API), `SameSite=Lax` in dev.
@@ -61,9 +63,11 @@ university-hub-v2/
     database.md                # schema rationale, migrations, password hashing
     deployment.md              # full Cloudflare deploy walkthrough
     mailgun.md                 # template names, variables, account setup
+  mailgun_templates/           # canonical Mailgun template HTML + plaintext + meta
   scripts/
     bootstrap-admin.mjs        # production: create the first super_admin
     hash-password.mjs          # offline PBKDF2-SHA256 hash generator
+    sync-mailgun-templates.mjs # push mailgun_templates/ to the Mailgun account
   .dev.vars.example            # Worker local secrets template
   .env.example                 # Frontend (Vite) env template
   package.json                 # npm workspaces root + top-level scripts
@@ -241,11 +245,13 @@ Neither file is committed — see `.gitignore`.
 
 ## Mailgun
 
-All transactional email goes through Mailgun. HTML lives in **Mailgun-hosted
-templates** — the Worker only sends template names + variables, never raw
-HTML. The Mailgun API key is **never** exposed to the browser; the Mailgun
-status UI shows `Configured` / `Missing configuration` only, never the
-secret value.
+All transactional email goes through Mailgun. **Template HTML is canonical
+in this repo** under `mailgun_templates/<name>/` (HTML body + plaintext +
+metadata); the Mailgun account holds a downstream copy that's pushed by
+`npm run sync:mailgun-templates`. The Worker only sends template names +
+variables, never raw HTML. The Mailgun API key is **never** exposed to the
+browser; the Mailgun status UI shows `Configured` / `Missing configuration`
+only, never the secret value.
 
 ### Required template names (epic §13)
 
@@ -273,6 +279,20 @@ When any of the four required vars is unset (or still set to a
 a `mailgun_not_configured` result — every `email_logs` row gets a structured
 failure reason and no HTTP request to Mailgun is made. The Settings UI will
 display **Missing configuration** until the secrets are provisioned.
+
+### Templates
+
+Canonical HTML + plaintext for every template lives under
+[`mailgun_templates/`](mailgun_templates/). Push local edits to the Mailgun
+account with:
+
+```bash
+MAILGUN_API_KEY=... MAILGUN_DOMAIN=... npm run sync:mailgun-templates
+```
+
+The script reads `MAILGUN_API_KEY` / `MAILGUN_DOMAIN` / `MAILGUN_REGION`
+from your environment (or `apps/worker/.dev.vars`), is idempotent, and
+prints what it created / updated / left unchanged.
 
 Full Mailgun setup walkthrough — account, verified domain, template
 authoring, variable list — is in [docs/mailgun.md](docs/mailgun.md).
@@ -481,6 +501,7 @@ the system.
 | Browser logs `CORS error` / `No 'Access-Control-Allow-Origin'`  | The Pages origin is not in `ALLOWED_WEB_ORIGINS`. Update via `npx wrangler secret put ALLOWED_WEB_ORIGINS` (comma-separated, supports `https://*.<project>.pages.dev` for previews). |
 | Mailgun status reads **Missing configuration**                  | Expected before secrets are provisioned. Once you set `MAILGUN_API_KEY` / `MAILGUN_DOMAIN` / `MAILGUN_FROM_EMAIL` / `MAILGUN_FROM_NAME` it will flip to **Configured**. |
 | Invitation email shows `failed` in `/app/email-logs`            | The Worker stored the invitation but Mailgun rejected the send (often: domain not verified, template not authored, key revoked). Click **Resend** after fixing.    |
+| Email accepted by Mailgun but never arrives in the inbox        | Likely "Template not found" — the Worker calls a template that's missing from the Mailgun domain. Run `npm run sync:mailgun-templates` and re-send.                |
 | Invitation acceptance returns `invitation_invalid`              | Token consumed, expired, or revoked. Have an admin issue a fresh invitation.                                                                                       |
 | `403 forbidden_role` when creating an invitation                | The actor's role is not allowed to invite the requested role. See `rolesInvitableBy` in `packages/shared` and [docs/auth.md](docs/auth.md).                        |
 | `npm run bootstrap:admin` returns 404                           | `BOOTSTRAP_SECRET` is not set on the Worker. Run `npx wrangler secret put BOOTSTRAP_SECRET`.                                                                       |
