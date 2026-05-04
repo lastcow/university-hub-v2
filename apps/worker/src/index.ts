@@ -137,6 +137,7 @@ import {
   handleUpdateUserStatus,
 } from "./routes/users.js";
 import { runScheduledBackup } from "./services/backup.js";
+import { runScheduledRetention } from "./services/retention.js";
 import { buildPreflightResponse, withCors } from "./utils/cors.js";
 import { errorResponse, jsonOk } from "./utils/responses.js";
 
@@ -222,23 +223,46 @@ export default {
     return withCors(response, env, request);
   },
 
-  // Cron Trigger handler (UNI-27). Cloudflare invokes this from the schedule
-  // declared in wrangler.toml ("0 2 * * *" → 02:00 UTC daily). The handler
-  // is defense-in-depth: the canonical scheduler is the GitHub Actions
-  // workflow at .github/workflows/d1-backup.yml. We log the result as a
-  // structured line so customers running `wrangler tail` see whether the
-  // in-Worker backup actually landed; failures here are non-fatal.
-  async scheduled(_event, env, ctx): Promise<void> {
+  // Cron Trigger handler. Cloudflare can fire multiple cron expressions
+  // at this Worker; we dispatch by `event.cron`:
+  //
+  //   - "0 2 * * *"   (UNI-27, defense-in-depth) — D1 → R2 backup. The
+  //                   block in wrangler.toml is commented out until R2 is
+  //                   enabled on the account; until then the canonical
+  //                   scheduler is the GitHub Actions workflow.
+  //   - "30 2 * * *"  (UNI-33) — nightly retention sweep. Always active.
+  //
+  // Each branch logs a structured line so `wrangler tail` shows what ran
+  // and how many rows moved. Failures are non-fatal — we don't want a
+  // single bad sweep to put the cron into an alert loop.
+  async scheduled(event, env, ctx): Promise<void> {
+    const cron = event.cron;
     const work = (async () => {
-      try {
-        const result = await runScheduledBackup(env);
-        const tag = result.ok ? "ok" : "skipped";
-        console.log(`[cron:d1-backup] ${tag} ${JSON.stringify(result)}`);
-      } catch (err) {
-        console.error(
-          `[cron:d1-backup] failed: ${(err as Error).message}\n${(err as Error).stack ?? ""}`,
-        );
+      if (cron === "0 2 * * *") {
+        try {
+          const result = await runScheduledBackup(env);
+          const tag = result.ok ? "ok" : "skipped";
+          console.log(`[cron:d1-backup] ${tag} ${JSON.stringify(result)}`);
+        } catch (err) {
+          console.error(
+            `[cron:d1-backup] failed: ${(err as Error).message}\n${(err as Error).stack ?? ""}`,
+          );
+        }
+        return;
       }
+      if (cron === "30 2 * * *") {
+        try {
+          const result = await runScheduledRetention(env);
+          const tag = result.ok ? "ok" : "partial";
+          console.log(`[cron:retention] ${tag} ${JSON.stringify(result)}`);
+        } catch (err) {
+          console.error(
+            `[cron:retention] failed: ${(err as Error).message}\n${(err as Error).stack ?? ""}`,
+          );
+        }
+        return;
+      }
+      console.warn(`[cron] unknown schedule fired: ${cron}`);
     })();
     ctx.waitUntil(work);
   },

@@ -93,6 +93,41 @@ export interface Env {
   D1_BACKUP_RETAIN_DAILY?: string;    // default: 30
   D1_BACKUP_RETAIN_WEEKLY?: string;   // default: 12
   D1_BACKUP_RETAIN_MONTHLY?: string;  // default: 6
+
+  // Retention sweep overrides (UNI-33). Read by services/retention.ts on
+  // every nightly cron run. All values are positive integers (days);
+  // non-numeric or zero values fall back to the documented default. The
+  // defaults match the FERPA-aligned baseline in docs/data-retention.md.
+  // Per-customer overrides go through Cloudflare env vars (`wrangler
+  // secret put` for sensitive customers, `[vars]` in wrangler.toml for
+  // documented overrides).
+  //
+  // Set RETENTION_DRY_RUN=1 to log the sweep plan without applying any
+  // INSERT/DELETE — useful when first deploying to a customer with
+  // pre-existing data we want to inspect before archival.
+  RETENTION_DRY_RUN?: string;                          // default: unset (live)
+  RETENTION_EDUCATIONAL_DAYS?: string;                 // default: 2555 (~7y)
+  RETENTION_AUDIT_LOG_DAYS?: string;                   // default: 2555 (~7y)
+  RETENTION_GRADE_ACCESS_LOG_DAYS?: string;            // default: 2555 (~7y)
+  RETENTION_EMAIL_LOG_DAYS?: string;                   // default: 90
+  RETENTION_SOFT_DELETED_DAYS?: string;                // default: 365
+  RETENTION_SESSION_PURGE_DAYS?: string;               // default: 30
+  RETENTION_RATE_LIMIT_PURGE_DAYS?: string;            // default: 30
+  RETENTION_MFA_CHALLENGE_PURGE_DAYS?: string;         // default: 30
+  RETENTION_PARENT_TOKEN_PURGE_DAYS?: string;          // default: 30
+  RETENTION_PARENT_SESSION_PURGE_DAYS?: string;        // default: 30
+  // Ultimate-retention windows on the archive shadow tables. Once a row's
+  // `retention_archived_at` is older than the configured window it is
+  // hard-deleted from the archive. Email gets the shortest window per the
+  // sub-issue spec ("archived emails purged after a year"); the rest
+  // default to "never auto-purge from archive" (set to a positive number
+  // to opt in per customer; 0 / blank skips the sweep).
+  RETENTION_ARCHIVE_EMAIL_DAYS?: string;               // default: 365
+  RETENTION_ARCHIVE_AUDIT_LOG_DAYS?: string;           // default: unset (skip)
+  RETENTION_ARCHIVE_GRADE_ACCESS_LOG_DAYS?: string;    // default: unset (skip)
+  RETENTION_ARCHIVE_GRADES_DAYS?: string;              // default: unset (skip)
+  RETENTION_ARCHIVE_ASSESSMENTS_DAYS?: string;         // default: unset (skip)
+  RETENTION_ARCHIVE_COURSE_ASSIGNMENTS_DAYS?: string;  // default: unset (skip)
 }
 
 export function isProduction(env: Env): boolean {

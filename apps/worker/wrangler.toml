@@ -25,18 +25,23 @@ database_id = "1c19aaa3-dbf6-4159-be4e-7fc89fb00752"
 # Migrations live at the repo root (see epic UNI-1, section 5).
 migrations_dir = "../../migrations"
 
-# Daily D1 → R2 backup (UNI-27). The blocks below are commented out until R2
-# is enabled on this Cloudflare account and the `university-hub-backups`
-# bucket has been created — see docs/disaster-recovery.md → "Provision the R2
-# bucket". Until then, the canonical scheduler is the GitHub Actions workflow
-# at `.github/workflows/d1-backup.yml`; the in-Worker cron below is defense-
-# in-depth and re-enables once the bucket exists.
+# Cron triggers. The Worker dispatches by `event.cron` in `index.ts`'s
+# `scheduled` handler.
 #
-# To re-enable: uncomment the two blocks and run `wrangler deploy`.
+#   - "30 2 * * *" (UNI-33) — nightly retention sweep. Always active. See
+#     docs/data-retention.md and apps/worker/src/services/retention.ts.
+#   - "0 2 * * *" (UNI-27, defense-in-depth) — D1 → R2 backup. Disabled
+#     until R2 is enabled on this Cloudflare account and the
+#     `university-hub-backups` bucket has been created (see
+#     docs/disaster-recovery.md → "Provision the R2 bucket"). Until then,
+#     the canonical scheduler is the GitHub Actions workflow at
+#     `.github/workflows/d1-backup.yml`.
 #
-# [triggers]
-# crons = ["0 2 * * *"]
-#
+# To re-enable the backup: append "0 2 * * *" to the `crons` array below
+# and uncomment the [[r2_buckets]] block, then run `wrangler deploy`.
+[triggers]
+crons = ["30 2 * * *"]
+
 # [[r2_buckets]]
 # binding = "BACKUPS"
 # bucket_name = "university-hub-backups"
