@@ -95,7 +95,7 @@ VALUES
    'Alex Nakamura', 'ciso@stanton.example.edu', '+1-555-0191',
    'Day-of-incident technical counterpart.'),
   ('customer_general_counsel', 'Customer General Counsel', 5,
-   'Marisol Greene', 'counsel@stanton.example.edu', '+1-555-0205',
+   'Marisol Greene', 'counsel@stanton.example.edu', '+1-555-0184',
    'Litigation-hold and disclosure decisions.'),
   ('customer_ceo', 'Customer CEO / executive sponsor', 6,
    'Dr. Eleanor Whitaker', 'president@stanton.example.edu', '+1-555-0173',

@@ -110,7 +110,7 @@ function seedMockupRows(): ContactRow[] {
       display_order: 5,
       person_name: "Marisol Greene",
       email: "counsel@stanton.example.edu",
-      phone: "+1-555-0205",
+      phone: "+1-555-0184",
       notes: "Litigation hold.",
       updated_by_user_id: null,
       updated_by_name: null,
