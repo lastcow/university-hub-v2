@@ -15,8 +15,8 @@ before launch.
 | External notification floor | Customer within 24h (S0/S1). Affected students per FERPA + state law. |
 | Drill cadence | Annually, after any S0/S1 incident, or after any major architecture change |
 | Post-mortem deadline | Within 7 calendar days of S0 or S1 declaration |
-| Owner | Jordan Reyes — SaaS operator on-call lead, jordan.reyes@universityhub.example.com, +1-555-0142 *(mockup — replace per deploy)* |
-| Customer escalation | Dr. Sam Patel — Stanton State University DPO / FERPA officer, dpo@stanton.example.edu, +1-555-0188 (after-hours) *(mockup — replace per deploy)* |
+| Owner | See **Settings → Owners & escalation contacts** (`escalation_contacts.role_key='operator_oncall'`) |
+| Customer escalation | See **Settings → Owners & escalation contacts** (`customer_dpo` / `customer_ferpa_officer` / `customer_it_lead` / `customer_general_counsel` / `customer_ceo`) |
 
 If this is your first time opening the runbook in anger: jump to
 [**S0/S1 containment**](#s0s1-containment-confirmed-or-likely-compromise).
@@ -573,25 +573,49 @@ match the code.
 
 ## Owners and escalation contacts
 
-> **Customers replace these mockup defaults before launch.** The rows below
-> are illustrative placeholders — Stanton State University and the example
-> phone numbers (+1-555-01xx range) are not real. Every operator and
-> customer row must be overwritten with real names, working emails, and
-> after-hours phone numbers reachable outside business hours, per deploy,
-> before opening to real students. Leaving the mockup values in production
-> is itself a runbook gap — promote it to S2 if you find them during a
-> real incident.
+> **The runtime in-app table is the source of truth.** Per UNI-40 the
+> editable copy of the operator + customer rows lives in `escalation_contacts`
+> in D1, surfaced under **Settings → Owners & escalation contacts** (super_admin
+> only). The migration seeds six mockup rows (RFC 2606 `*@example.*` emails,
+> +1-555-01xx fictional phones); customers must edit each row to real values
+> before opening to real students. Leaving any row in mockup state in
+> production is itself a runbook gap — finding mockup values during a real
+> incident is an S2 self-incident.
+>
+> **Mockup-vs-real check (operator quick scan).** A row is still mockup if
+> *either* its email matches `*@example.*` (RFC 2606 reserved) *or* its phone
+> matches `+1-555-01xx` (FCC fictional range). The `GET /api/escalation-
+> contacts` response surfaces an `is_mockup` flag and an `any_mockup`
+> roll-up, and the Settings card renders a launch-blocker banner when any
+> row is still mockup. Run the same check by eye against this table or by
+> querying `SELECT role_key, email, phone FROM escalation_contacts WHERE
+> email LIKE '%@example.%' OR phone LIKE '%555-01%';`.
+>
+> The fixed reference rows below (Cloudflare, Mailgun) are not in the DB —
+> they're vendor support paths and are stable across customers.
 
-| Role | Name | Email | Phone (after-hours) | Notes |
-|------|------|-------|--------------------|-------|
-| SaaS operator on-call lead | Jordan Reyes | jordan.reyes@universityhub.example.com | +1-555-0142 | First responder. Reachable 24/7 during launch + first 90 days. |
-| SaaS operator escalation (CTO / founder) | Morgan Lee | morgan.lee@universityhub.example.com | +1-555-0156 | Backup; pulled in for S0 only. |
-| Customer CEO / president | Dr. Eleanor Whitaker | president@stanton.example.edu | +1-555-0173 | Notified for S0 within 24h. |
-| Customer DPO / FERPA compliance officer | Dr. Sam Patel | dpo@stanton.example.edu | +1-555-0188 | Owns student-facing FERPA notifications, DOE / state filings. |
-| Customer IT / security lead | Alex Nakamura | ciso@stanton.example.edu | +1-555-0191 | Day-of-incident technical counterpart. |
-| Customer general counsel | Marisol Greene | counsel@stanton.example.edu | +1-555-0205 | Litigation-hold and disclosure decisions. |
-| Cloudflare support | enterprise@cloudflare.com / dashboard ticket | | | Use only if Cloudflare-account-level intervention is required. |
-| Mailgun support | help@mailgun.com / dashboard ticket | | | Use only if Mailgun-side abuse is observed. |
+| Role | Source | Notes |
+|------|--------|-------|
+| SaaS operator on-call lead | `escalation_contacts.role_key='operator_oncall'` | First responder. Reachable 24/7 during launch + first 90 days. |
+| SaaS operator escalation (CTO / founder) | n/a (in-app table holds operator on-call only — escalate through SaaS internal paging) | Backup; pulled in for S0 only. |
+| Customer CEO / executive sponsor | `escalation_contacts.role_key='customer_ceo'` | Final-call escalation. Notified for S0 within 24h. |
+| Customer DPO / privacy officer | `escalation_contacts.role_key='customer_dpo'` | Owns student-facing FERPA notifications, DOE / state filings. |
+| Customer FERPA officer | `escalation_contacts.role_key='customer_ferpa_officer'` | Issues student notifications for material breaches; may be the same person as the DPO at smaller customers. |
+| Customer IT / security lead | `escalation_contacts.role_key='customer_it_lead'` | Day-of-incident technical counterpart. |
+| Customer general counsel | `escalation_contacts.role_key='customer_general_counsel'` | Litigation-hold and disclosure decisions. |
+| Cloudflare support | enterprise@cloudflare.com / dashboard ticket | Use only if Cloudflare-account-level intervention is required. |
+| Mailgun support | help@mailgun.com / dashboard ticket | Use only if Mailgun-side abuse is observed. |
+
+To fetch the live table during an incident (does not require the SPA):
+
+```bash
+curl -sb "$SESSION_COOKIE_FILE" \
+  https://hub.<customer>.example.edu/api/escalation-contacts | jq .
+```
+
+Edits go via `PATCH /api/escalation-contacts/<role_key>` (super_admin only)
+and write an `escalation.contact_updated` row to `audit_logs` capturing the
+mockup-to-real transition.
 
 After-hours escalation order: SaaS on-call → SaaS escalation → customer
 IT lead → customer DPO. Customer CEO and counsel are looped in by the
@@ -731,13 +755,14 @@ paged the operator's email.
   the top-level `.gitignore` does not exclude it; an inattentive `git
   add` after an incident could check forensic dumps into the repo. Add
   `incidents/` to `.gitignore`.
-- **Customer escalation contacts are mockup defaults.** The
-  [Owners and escalation contacts](#owners-and-escalation-contacts)
-  table now ships with illustrative mockup rows (Stanton State
-  University, +1-555-01xx phone range) so the shape of the data is
-  obvious, but those values are not callable. Block launch per deploy
-  on overwriting every row with real names, emails, and reachable
-  after-hours phone numbers for the deploying customer.
+- **Customer escalation contacts are mockup defaults.** Resolved by
+  UNI-40 — the [Owners and escalation contacts](#owners-and-escalation-contacts)
+  table is now backed by `escalation_contacts` in D1 and editable from
+  Settings (super_admin only). The migration seeds six mockup rows
+  (`*@example.*` emails, +1-555-01xx phones); the runbook + admin UI
+  surface an `is_mockup` flag so finding mockup values during an
+  incident remains an S2 self-incident. Per-deploy launch gate: customer
+  must save real values for every row before opening to real students.
 - **Mailgun-side reset is dashboard-only.** The runbook should call out
   that the Mailgun reset is point-and-click (no API equivalent), so an
   operator reading this at 3 a.m. doesn't waste time hunting for a CLI.

@@ -78,6 +78,7 @@ const CATEGORY_VARIANTS: Record<AuditActionCategory, BadgeProps["variant"]> = {
   disclosure: "warning",
   parent: "secondary",
   legal: "secondary",
+  escalation: "warning",
 };
 
 function ActionBadge({ action }: { action: AuditAction }) {
