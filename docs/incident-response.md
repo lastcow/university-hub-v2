@@ -141,6 +141,48 @@ operator. The operator's job is to:
 Run these in order. Do not parallelize step 1 with anything else — the
 forensic snapshot is the only artifact you can't recreate after rotation.
 
+### Rotation scope (S1 only — S0 fires the full set)
+
+**S0 always fires the full rotation set.** A confirmed breach of student
+data means every secret keyed to this deployment must be assumed dirty;
+do not pick and choose. Skip directly to [step 1](#1-snapshot-d1-for-forensics).
+
+For **S1**, scope rotation off the *exposed* secret rather than the tier
+alone. Use this matrix to decide which of the rotation steps below
+actually fire — if a row says **Skip**, omit that step; if it says
+**Consider**, fire the step only if you cannot rule out that the leak
+path also touched that secret.
+
+| Secret category | S1 — auth-surface exposed | S1 — non-auth-surface exposed |
+|---|---|---|
+| **Session-tier** — `SESSION_SECRET` rotation + `DELETE FROM sessions` / `mfa_challenges` / `parent_sign_in_tokens` / `parent_sessions` ([step 3](#3-rotate-session-tier-secrets-forces-every-sign-out)) | **Rotate** — primary sign-everyone-out lever | **Skip** unless the leak path could plausibly have touched session storage (e.g. exposed CI runner with D1 access → **Consider**) |
+| **Admin password / MFA** for the affected user(s) ([step 5](#5-rotate-any-compromised-admin-password)) | **Rotate** the password; clear `mfa_secret` if the seed is suspect; regenerate recovery codes | **Skip** — non-auth-surface leaks do not touch user credential material |
+| **Mailgun secret set** — `MAILGUN_API_KEY` and friends ([step 4](#4-rotate-mailgun-credentials)) | **Consider** — only if the leak path also exposed Mailgun secrets (broad git-history leak, shared dev box) | **Rotate** when this is the exposed surface — reset upstream in the Mailgun dashboard first, then `wrangler secret put` |
+| **Cloudflare API token** + dashboard credentials ([step 6](#6-rotate-cloudflare-account-credentials-s1-specifically)) | **Consider** — rotate if the auth-surface leak path could plausibly have touched CI / dashboard creds | **Rotate** when this is the exposed surface — revoke the published token, mint a replacement, end every dashboard session if the account password leaked |
+| **GH Actions repo secrets** (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, etc., refreshed under **Settings → Secrets and variables → Actions**) | **Consider** — only if the leak path implicates the CI/CD layer | **Rotate** when the leaked secret was sourced from CI, or whenever the underlying Cloudflare token is rotated |
+| **`BOOTSTRAP_SECRET`** ([step 7](#7-rotate-bootstrap_secret-if-its-still-set)) | **Verify unset** with `wrangler secret list`; delete if present | **Verify unset** with `wrangler secret list`; delete if present |
+
+**Definitions.** "Auth-surface" means the leaked credential or token
+directly grants authenticated access to a user account, admin session,
+or session storage: `super_admin` / `university_admin` password,
+`mfa_secret`, MFA recovery codes, a captured `university_hub_session`
+cookie, or `SESSION_SECRET` itself. "Non-auth-surface" means the leaked
+secret grants something *other than* direct user authentication —
+outbound mail (Mailgun), Cloudflare account operations (R2, Worker
+deploy, DNS), or CI/CD execution.
+
+**Always-on steps regardless of which secret leaked.** [Step 1](#1-snapshot-d1-for-forensics)
+(forensic snapshot) and [step 8](#8-re-confirm-mailgun-and-pages-stack-are-clean)
+(re-confirm Mailgun + pages stack are clean) fire on every S1. [Step 2](#2-lock-affected-accounts)
+(lock affected accounts) fires whenever there are accounts to lock —
+typically auth-surface S1, but also any non-auth-surface S1 where a
+specific user introduced the leak (suspend their account pending the
+post-incident conversation).
+
+The matrix is a floor: when you cannot cleanly slot the exposure into
+one column, **rotate everything** and downgrade the scope only after the
+post-mortem.
+
 ### 1. Snapshot D1 for forensics
 
 Take an immediate, dated dump of the live database **before** any
@@ -367,6 +409,21 @@ npx wrangler pages deployment list --project-name=university-hub-v2-web
 A deploy you didn't make is itself an S1: someone with deploy access
 shipped code; treat the deploy package as untrusted until the diff is
 reviewed.
+
+### 9. (Optional) Rewrite git history — only after rotation
+
+If the leaked secret is in a commit pushed to a public repo or a repo
+with external collaborators, *and* you have already completed the
+rotation steps above, follow the recipe + safety rails in
+[docs/security-ci.md → 5c. History rewrite (after rotation only)](security-ci.md#5c-history-rewrite-after-rotation-only).
+
+History rewrite is **never a substitute for rotation.** Any value that
+touched a public repo is compromised regardless of whether the commit
+is later scrubbed; rotation is non-negotiable, the rewrite is hygiene
+for future cloners. Skip the rewrite entirely if the leaked commit is
+older, widely referenced from other branches, or already mirrored — the
+cost of breaking every collaborator's checkout outweighs the benefit
+once the secret is dead.
 
 ## S2 containment (suspected, not confirmed)
 
@@ -701,10 +758,13 @@ paged the operator's email.
 **Gaps surfaced during the drill** — these go into the follow-up issue:
 
 - **Decision guidance for "rotate SESSION_SECRET" on a non-auth-surface
-  S1.** The runbook lists rotation as part of the S1 set without saying
-  whether it should fire when the leaked secret is unrelated to the
-  session layer. Add a "rotate which secrets" decision matrix keyed off
-  the *exposed* secret, not the tier alone.
+  S1.** ~~The runbook lists rotation as part of the S1 set without
+  saying whether it should fire when the leaked secret is unrelated to
+  the session layer.~~ Resolved (UNI-39): see
+  [Rotation scope (S1 only — S0 fires the full set)](#rotation-scope-s1-only--s0-fires-the-full-set).
+  The matrix keys rotation off the *exposed* secret, with explicit
+  rotate / consider / skip cells per category for auth-surface vs.
+  non-auth-surface S1.
 - **`SESSION_SECRET` is dead weight today.** ~~The Worker doesn't use
   it.~~ Resolved (UNI-37): `SESSION_SECRET` now keys an HMAC-SHA-256
   over the raw session token, so rotating it invalidates every row in
@@ -720,11 +780,12 @@ paged the operator's email.
   the staged file list, and a best-effort commit subject so every
   bypass is auditable. See `docs/security-ci.md` → "Bypassing the
   hook" for when this is and isn't appropriate.
-- **No documented history-rewrite recipe.** The drill walked through
+- **No documented history-rewrite recipe.** ~~The drill walked through
   `git filter-repo --replace-text` by hand and made up the safety rails
   on the spot (re-clone notice, "old + referenced = don't rewrite"
-  rule). Codify the exact command + safety rails in
-  `docs/security-ci.md → Triage flow when the hook fires`.
+  rule).~~ Resolved (UNI-39): codified in
+  [docs/security-ci.md → 5c. History rewrite (after rotation only)](security-ci.md#5c-history-rewrite-after-rotation-only),
+  cross-linked from [step 9 of S0/S1 containment](#9-optional-rewrite-git-history--only-after-rotation).
 - **Incident-directory convention is undefined.** The runbook tells the
   operator to drop forensic artefacts under `incidents/<stamp>/` but
   the top-level `.gitignore` does not exclude it; an inattentive `git
