@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
+  BarChart3,
   ClipboardList,
   Pencil,
   Plus,
@@ -135,6 +136,14 @@ export function CourseDetailPage() {
       user.role === "teacher" ||
       user.role === "teacher_assistant");
 
+  // Analytics is faculty-only by spec (UNI-31). Admins also see the link;
+  // teacher / TA do not.
+  const canOpenAnalytics =
+    !!user &&
+    (user.role === "super_admin" ||
+      user.role === "university_admin" ||
+      user.role === "faculty");
+
   async function onConfirmDelete() {
     if (!id) return;
     setDeleting(true);
@@ -216,6 +225,14 @@ export function CourseDetailPage() {
                     <Link to={`/app/courses/${state.data.id}/grades`}>
                       <ClipboardList className="h-4 w-4" />
                       Gradebook
+                    </Link>
+                  </Button>
+                ) : null}
+                {canOpenAnalytics ? (
+                  <Button asChild size="sm" variant="outline">
+                    <Link to={`/app/courses/${state.data.id}/analytics`}>
+                      <BarChart3 className="h-4 w-4" />
+                      Analytics
                     </Link>
                   </Button>
                 ) : null}

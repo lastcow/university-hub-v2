@@ -7,6 +7,7 @@ export * from "./department.js";
 export * from "./course.js";
 export * from "./assessment.js";
 export * from "./grade.js";
+export * from "./analytics.js";
 export * from "./student.js";
 export * from "./faculty.js";
 export * from "./teacher.js";
