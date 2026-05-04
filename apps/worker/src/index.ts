@@ -2,8 +2,17 @@ import type { HealthResponse } from "@university-hub/shared";
 
 import type { Env } from "./env.js";
 import { buildContext } from "./middleware/auth.js";
+import {
+  applyGenericLimit,
+  rateLimitedResponse,
+} from "./middleware/rate-limit.js";
 import { handleListAuditLogs } from "./routes/audit-logs.js";
-import { handleMe, handleSignIn, handleSignOut } from "./routes/auth.js";
+import {
+  handleMe,
+  handlePasswordResetRequest,
+  handleSignIn,
+  handleSignOut,
+} from "./routes/auth.js";
 import {
   handleMfaChallenge,
   handleMfaDisable,
@@ -136,6 +145,22 @@ export default {
 
     const ctx = await buildContext(request, env);
 
+    // Generic API rate limit (UNI-25). Authenticated callers get a per-session
+    // bucket (~120 req/min); everyone else a per-IP bucket (~30 req/min).
+    // Skips /api/health. Per-route stricter limits (sign-in, MFA challenge,
+    // password reset, invitation resend) run inside the route handlers.
+    const generic = await applyGenericLimit(ctx);
+    if (generic && !generic.allowed) {
+      return withCors(
+        rateLimitedResponse(
+          generic,
+          "Too many requests. Slow down and try again shortly.",
+        ),
+        env,
+        request,
+      );
+    }
+
     const response = await routeApi(ctx, request, env, url);
     return withCors(response, env, request);
   },
@@ -175,6 +200,17 @@ async function routeApi(
     }
     if (url.pathname === "/api/auth/me" && request.method === "GET") {
       return handleMe(ctx);
+    }
+    // Password-reset request endpoint (UNI-25). Stub today — always 202 with
+    // a generic message regardless of account existence — but the per-email
+    // rate limiter is wired so credential-stuffing reconnaissance can't
+    // probe addresses, and so an actual password-reset feature can plug in
+    // here later without revisiting the abuse surface.
+    if (
+      url.pathname === "/api/auth/password-reset/request" &&
+      request.method === "POST"
+    ) {
+      return handlePasswordResetRequest(ctx);
     }
 
     // MFA endpoints (UNI-24). Enroll/verify-enroll/challenge consume the

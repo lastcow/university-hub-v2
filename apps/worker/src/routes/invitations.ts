@@ -24,8 +24,6 @@ import {
   type InvitationListItem,
   type InvitationLookupResult,
   type InvitationStatus,
-  INVITATION_RESEND_MAX_PER_WINDOW,
-  INVITATION_RESEND_WINDOW_MS,
   INVITATION_TTL_MS,
 } from "@university-hub/shared";
 
@@ -43,6 +41,11 @@ import {
   type SendResult,
 } from "../mail/index.js";
 import { requireAuth, type RequestContext } from "../middleware/auth.js";
+import {
+  invitationResendLimit,
+  rateLimitedResponse,
+  bySession,
+} from "../middleware/rate-limit.js";
 import { writeAuditLog } from "../services/audit.js";
 import { buildSessionSetCookie } from "../utils/cookies.js";
 import { errorResponse, jsonOk } from "../utils/responses.js";
@@ -467,23 +470,20 @@ export async function handleResendInvitation(
     );
   }
 
-  // Rate limit: count `invitation_resend` rows for this invitation in the
-  // trailing window. Stops accidental hammer-on-the-button + abuse.
-  const since = new Date(Date.now() - INVITATION_RESEND_WINDOW_MS).toISOString();
-  const recent = await queryFirst<{ c: number }>(
-    ctx.env.DB,
-    `SELECT COUNT(*) AS c FROM email_logs
-      WHERE related_entity_type = 'invitation'
-        AND related_entity_id   = ?
-        AND type                = 'invitation_resend'
-        AND created_at          > ?`,
-    [invitationId, since],
+  // Rate limit per invitation id (UNI-25). The shared rate-limit middleware
+  // handles the bookkeeping; previously this counted email_logs rows, which
+  // worked but was awkward to make configurable. Default: 3 per invitation
+  // per hour.
+  const resendOutcome = await bySession(
+    ctx.env,
+    "invitation.resend",
+    invitationId,
+    invitationResendLimit(ctx.env),
   );
-  if ((recent?.c ?? 0) >= INVITATION_RESEND_MAX_PER_WINDOW) {
-    return errorResponse(
-      429,
-      "rate_limited",
-      "Too many resends for this invitation in the last hour. Please wait before trying again.",
+  if (!resendOutcome.allowed) {
+    return rateLimitedResponse(
+      resendOutcome,
+      "Too many resends for this invitation. Please wait before trying again.",
     );
   }
 

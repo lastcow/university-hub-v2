@@ -41,6 +41,23 @@ export interface Env {
   // unset the secret with `wrangler secret delete BOOTSTRAP_SECRET` after
   // bootstrap as defense in depth.
   BOOTSTRAP_SECRET?: string;
+
+  // Rate-limit overrides (UNI-25). Defaults live in middleware/rate-limit.ts;
+  // env vars only need to be set when an operator wants different ceilings.
+  // All values are positive integers; non-numeric or zero values fall back
+  // to the default.
+  RATE_LIMIT_SIGN_IN_MAX?: string;                       // default 5
+  RATE_LIMIT_SIGN_IN_WINDOW_SECONDS?: string;            // default 900 (15 min)
+  RATE_LIMIT_PASSWORD_RESET_MAX?: string;                // default 3
+  RATE_LIMIT_PASSWORD_RESET_WINDOW_SECONDS?: string;     // default 3600 (1h)
+  RATE_LIMIT_MFA_CHALLENGE_MAX?: string;                 // default 5
+  RATE_LIMIT_MFA_CHALLENGE_WINDOW_SECONDS?: string;      // default 300 (5 min)
+  RATE_LIMIT_INVITATION_RESEND_MAX?: string;             // default 3
+  RATE_LIMIT_INVITATION_RESEND_WINDOW_SECONDS?: string;  // default 3600 (1h)
+  RATE_LIMIT_API_AUTH_MAX?: string;                      // default 120
+  RATE_LIMIT_API_AUTH_WINDOW_SECONDS?: string;           // default 60
+  RATE_LIMIT_API_ANON_MAX?: string;                      // default 30
+  RATE_LIMIT_API_ANON_WINDOW_SECONDS?: string;           // default 60
 }
 
 export function isProduction(env: Env): boolean {
