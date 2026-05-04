@@ -157,10 +157,10 @@ function tierTargets(date, prefix) {
 // ---------------------------------------------------------------------------
 // R2 operations
 //
-// `wrangler r2 object put / list / delete` is preferred over the raw S3 API
-// because it picks up CLOUDFLARE_API_TOKEN automatically and matches the
-// rest of this repo's tooling. The list output is JSON-parsed; put + delete
-// rely on exit codes (wrangler prints a human-readable message we log).
+// `wrangler r2 object put/delete --remote` for the writes (auth flows through
+// CLOUDFLARE_API_TOKEN automatically). Listing goes through the Cloudflare
+// REST API directly because `wrangler r2 object list` does not exist as of
+// wrangler 4.87 — `wrangler r2` exposes only get/put/delete on objects.
 
 async function r2Put(bucket, key, filePath) {
   await wrangler([
@@ -175,43 +175,46 @@ async function r2Put(bucket, key, filePath) {
 }
 
 async function r2Delete(bucket, key) {
-  await wrangler(["r2", "object", "delete", `${bucket}/${key}`, "--remote"]);
+  await wrangler([
+    "r2",
+    "object",
+    "delete",
+    `${bucket}/${key}`,
+    "--remote",
+  ]);
 }
 
-async function r2ListPrefix(bucket, prefix) {
-  // `wrangler r2 object list` paginates; we ask for a high per-page count and
-  // walk the cursor until exhausted. Each entry has at least { key, size,
-  // uploaded } in the JSON output.
+async function r2ListPrefix(env, prefix) {
+  // GET /accounts/{id}/r2/buckets/{name}/objects?prefix=...&cursor=...
+  // Returns { success, result: [{ key, last_modified, size, ... }],
+  // result_info: { cursor } }. We walk the cursor until exhausted.
   const objects = [];
   let cursor;
   for (let page = 0; page < 100; page++) {
-    const args = [
-      "r2",
-      "object",
-      "list",
-      bucket,
-      `--prefix=${prefix}`,
-      "--per-page=1000",
-      "--remote",
-      "--output=json",
-    ];
-    if (cursor) args.push(`--cursor=${cursor}`);
-    const { stdout } = await wrangler(args);
-    let payload;
-    try {
-      payload = JSON.parse(stdout);
-    } catch {
-      // Older wrangler versions print a wrapper line before the JSON.
-      const start = stdout.indexOf("{");
-      const end = stdout.lastIndexOf("}");
-      if (start === -1 || end === -1) {
-        throw new Error(`r2 object list returned non-JSON output:\n${stdout}`);
-      }
-      payload = JSON.parse(stdout.slice(start, end + 1));
+    const url = new URL(
+      `https://api.cloudflare.com/client/v4/accounts/${env.cfAccount}/r2/buckets/${env.bucket}/objects`,
+    );
+    url.searchParams.set("prefix", prefix);
+    url.searchParams.set("per_page", "1000");
+    if (cursor) url.searchParams.set("cursor", cursor);
+    const resp = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${env.cfToken}`,
+        Accept: "application/json",
+      },
+    });
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw new Error(`r2 list ${prefix} failed: HTTP ${resp.status}\n${body}`);
     }
-    const entries = payload.result ?? payload.objects ?? [];
-    for (const entry of entries) objects.push(entry);
-    cursor = payload.result_info?.cursor ?? payload.cursor;
+    const payload = await resp.json();
+    if (payload.success === false) {
+      throw new Error(
+        `r2 list ${prefix} failed: ${JSON.stringify(payload.errors ?? payload)}`,
+      );
+    }
+    for (const entry of payload.result ?? []) objects.push(entry);
+    cursor = payload.result_info?.cursor;
     if (!cursor) break;
   }
   return objects;
@@ -227,7 +230,7 @@ async function r2ListPrefix(bucket, prefix) {
 
 async function sweepTier(env, tier, retain) {
   const prefix = `${env.prefix}/${tier}/`;
-  const objects = await r2ListPrefix(env.bucket, prefix);
+  const objects = await r2ListPrefix(env, prefix);
   objects.sort((a, b) => {
     const ua = Date.parse(a.uploaded ?? a.last_modified ?? 0);
     const ub = Date.parse(b.uploaded ?? b.last_modified ?? 0);

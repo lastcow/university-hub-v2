@@ -111,30 +111,48 @@ async function wrangler(args) {
   return run("npx", ["--no-install", "wrangler", ...args], { cwd: WORKER_DIR });
 }
 
+// `wrangler r2 object` exposes only get/put/delete on objects (as of
+// wrangler 4.87) — no list subcommand — so listing goes through the
+// Cloudflare REST API directly. get/put/delete still go through wrangler
+// with `--remote` so auth flows through CLOUDFLARE_API_TOKEN automatically.
 async function listTier(bucket, prefix, tier) {
-  const args = [
-    "r2",
-    "object",
-    "list",
-    bucket,
-    `--prefix=${prefix}/${tier}/`,
-    "--per-page=1000",
-    "--remote",
-    "--output=json",
-  ];
-  const { stdout } = await wrangler(args);
-  let payload;
-  try {
-    payload = JSON.parse(stdout);
-  } catch {
-    const start = stdout.indexOf("{");
-    const end = stdout.lastIndexOf("}");
-    if (start === -1 || end === -1) {
-      throw new Error(`r2 object list returned non-JSON output:\n${stdout}`);
-    }
-    payload = JSON.parse(stdout.slice(start, end + 1));
+  const cfToken = process.env.CLOUDFLARE_API_TOKEN;
+  const cfAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
+  if (!cfToken || !cfAccount) {
+    throw new Error(
+      "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must both be set " +
+        "to list R2 objects.",
+    );
   }
-  return payload.result ?? payload.objects ?? [];
+  const objects = [];
+  let cursor;
+  for (let page = 0; page < 100; page++) {
+    const url = new URL(
+      `https://api.cloudflare.com/client/v4/accounts/${cfAccount}/r2/buckets/${bucket}/objects`,
+    );
+    url.searchParams.set("prefix", `${prefix}/${tier}/`);
+    url.searchParams.set("per_page", "1000");
+    if (cursor) url.searchParams.set("cursor", cursor);
+    const resp = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${cfToken}`,
+        Accept: "application/json",
+      },
+    });
+    if (!resp.ok) {
+      throw new Error(`r2 list ${tier} failed: HTTP ${resp.status}\n${await resp.text()}`);
+    }
+    const payload = await resp.json();
+    if (payload.success === false) {
+      throw new Error(
+        `r2 list ${tier} failed: ${JSON.stringify(payload.errors ?? payload)}`,
+      );
+    }
+    for (const entry of payload.result ?? []) objects.push(entry);
+    cursor = payload.result_info?.cursor;
+    if (!cursor) break;
+  }
+  return objects;
 }
 
 async function downloadObject(bucket, key, dest) {
