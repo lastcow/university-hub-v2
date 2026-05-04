@@ -51,3 +51,31 @@ SUPPORT_EMAIL=support@example.com
 # RATE_LIMIT_API_AUTH_WINDOW_SECONDS=60
 # RATE_LIMIT_API_ANON_MAX=30
 # RATE_LIMIT_API_ANON_WINDOW_SECONDS=60
+
+# Retention sweep overrides (UNI-33). All values are positive integers in
+# *days*; defaults below match the FERPA-aligned baseline documented in
+# docs/data-retention.md. Override per-customer when an institution's
+# policy differs (e.g. shorter audit retention for a state university,
+# longer educational retention for a graduate school).
+#
+# RETENTION_DRY_RUN=1                          # log the plan, do nothing
+# RETENTION_EDUCATIONAL_DAYS=2555              # grades / assessments / course_assignments (~7y)
+# RETENTION_AUDIT_LOG_DAYS=2555                # audit_logs (~7y)
+# RETENTION_GRADE_ACCESS_LOG_DAYS=2555         # FERPA §99.32 record-of-disclosure (~7y)
+# RETENTION_EMAIL_LOG_DAYS=90
+# RETENTION_SOFT_DELETED_DAYS=365              # assessments.deleted_at < cutoff
+# RETENTION_SESSION_PURGE_DAYS=30
+# RETENTION_RATE_LIMIT_PURGE_DAYS=30
+# RETENTION_MFA_CHALLENGE_PURGE_DAYS=30
+# RETENTION_PARENT_TOKEN_PURGE_DAYS=30
+# RETENTION_PARENT_SESSION_PURGE_DAYS=30
+#
+# Ultimate-retention windows applied to the archive shadow tables.
+# Email-archived purge defaults to 1 year per the sub-issue spec. The rest
+# default to "never auto-purge" — set a positive number to opt in.
+# RETENTION_ARCHIVE_EMAIL_DAYS=365
+# RETENTION_ARCHIVE_AUDIT_LOG_DAYS=
+# RETENTION_ARCHIVE_GRADE_ACCESS_LOG_DAYS=
+# RETENTION_ARCHIVE_GRADES_DAYS=
+# RETENTION_ARCHIVE_ASSESSMENTS_DAYS=
+# RETENTION_ARCHIVE_COURSE_ASSIGNMENTS_DAYS=
