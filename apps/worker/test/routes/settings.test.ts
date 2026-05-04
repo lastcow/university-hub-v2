@@ -107,8 +107,11 @@ function ctxWith(env: Env, db: ProgrammableD1, actor: Partial<UserRow> & Pick<Us
       id: "s",
       user_id: actor.id,
       token_hash: "h",
+      ip_address: null,
+      user_agent: null,
       expires_at: "2099",
       created_at: "2026",
+      last_activity_at: "2026",
     },
   };
   return {

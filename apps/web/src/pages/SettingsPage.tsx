@@ -14,8 +14,11 @@ import { useEffect, useState, type FormEvent } from "react";
 import {
   CheckCircle2,
   KeyRound,
+  Laptop,
   Lock,
+  LogOut,
   Mail,
+  Monitor,
   ShieldCheck,
   ShieldAlert,
   University,
@@ -27,6 +30,8 @@ import type {
   MailgunStatusResponse,
   MailgunVarStatusEntry,
   MfaStatusResponse,
+  SessionListItem,
+  SessionListResponse,
   University as UniversityType,
 } from "@university-hub/shared";
 
@@ -51,6 +56,11 @@ import {
   getMfaStatus,
   regenerateRecoveryCodes,
 } from "@/lib/mfa";
+import {
+  listMySessions,
+  revokeAllOtherSessions,
+  revokeMySession,
+} from "@/lib/sessions";
 import { getUniversity } from "@/lib/universities";
 import {
   getMailgunStatus,
@@ -166,6 +176,8 @@ export function SettingsPage() {
       />
 
       <SecuritySection />
+
+      <ActiveSessionsSection />
 
       <MailgunSection state={mailgun} />
     </div>
@@ -818,6 +830,236 @@ function RecoveryCodesPanel({
       </div>
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Active sessions (UNI-26)
+// ---------------------------------------------------------------------------
+
+interface SessionsState {
+  status: LoadStatus;
+  data?: SessionListResponse;
+  error?: string;
+}
+
+function ActiveSessionsSection() {
+  const [state, setState] = useState<SessionsState>({ status: "idle" });
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [signingOutAll, setSigningOutAll] = useState(false);
+
+  const reload = () => {
+    const controller = new AbortController();
+    setState((prev) => ({ ...prev, status: "loading" }));
+    listMySessions(controller.signal)
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        setState({ status: "ok", data });
+      })
+      .catch((cause: unknown) => {
+        if (controller.signal.aborted) return;
+        setState({
+          status: "error",
+          error:
+            cause instanceof ApiClientError
+              ? cause.message
+              : "Could not load active sessions.",
+        });
+      });
+    return controller;
+  };
+
+  useEffect(() => {
+    const controller = reload();
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function onRevoke(sessionId: string) {
+    setBusyId(sessionId);
+    try {
+      await revokeMySession(sessionId);
+      toast({
+        title: "Session revoked",
+        description: "That device will be signed out on its next request.",
+        variant: "success",
+      });
+      reload();
+    } catch (cause) {
+      toast({
+        title: "Could not revoke session",
+        description:
+          cause instanceof ApiClientError
+            ? cause.message
+            : "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function onSignOutAll() {
+    setSigningOutAll(true);
+    try {
+      const res = await revokeAllOtherSessions();
+      toast({
+        title:
+          res.revoked_count === 0
+            ? "No other sessions to sign out"
+            : `Signed out ${res.revoked_count} other session${res.revoked_count === 1 ? "" : "s"}`,
+        description: "Your current device stays signed in.",
+        variant: "success",
+      });
+      reload();
+    } catch (cause) {
+      toast({
+        title: "Could not sign out other devices",
+        description:
+          cause instanceof ApiClientError
+            ? cause.message
+            : "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setSigningOutAll(false);
+    }
+  }
+
+  const sessions = state.data?.sessions ?? [];
+  const hasOthers = sessions.some((s) => !s.is_current);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Monitor className="h-5 w-5 text-muted-foreground" />
+          <CardTitle>Active sessions</CardTitle>
+        </div>
+        <CardDescription>
+          Devices currently signed in to your account. Sessions go idle after
+          the configured timeout and re-authenticate after the absolute window.
+          Revoke any session you don't recognize.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {state.status === "loading" || state.status === "idle" ? (
+          <div className="space-y-2">
+            <Skeleton className="h-16 w-full" />
+            <Skeleton className="h-16 w-full" />
+          </div>
+        ) : state.status === "error" ? (
+          <ErrorState
+            title="Couldn't load sessions"
+            description={state.error}
+          />
+        ) : (
+          <>
+            <ul className="divide-y divide-border rounded-md border border-border">
+              {sessions.map((session) => (
+                <SessionRow
+                  key={session.id}
+                  session={session}
+                  busy={busyId === session.id}
+                  onRevoke={() => onRevoke(session.id)}
+                />
+              ))}
+              {sessions.length === 0 ? (
+                <li className="px-4 py-3 text-sm text-muted-foreground">
+                  No active sessions.
+                </li>
+              ) : null}
+            </ul>
+            {state.data ? (
+              <p className="text-xs text-muted-foreground">
+                Idle timeout {formatDuration(state.data.idle_timeout_seconds)}.
+                Absolute timeout{" "}
+                {formatDuration(state.data.absolute_timeout_seconds)}.
+              </p>
+            ) : null}
+            <div className="flex items-center justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onSignOutAll}
+                disabled={!hasOthers || signingOutAll}
+                className="gap-2"
+              >
+                <LogOut className="h-4 w-4" />
+                {signingOutAll ? "Signing out…" : "Sign out all other devices"}
+              </Button>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SessionRow({
+  session,
+  busy,
+  onRevoke,
+}: {
+  session: SessionListItem;
+  busy: boolean;
+  onRevoke: () => void;
+}) {
+  return (
+    <li className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-start gap-3">
+        <Laptop className="mt-0.5 h-5 w-5 text-muted-foreground" />
+        <div className="space-y-1 text-sm">
+          <div className="flex items-center gap-2 font-medium">
+            <span className="truncate">
+              {session.user_agent_excerpt ?? "Unknown device"}
+            </span>
+            {session.is_current ? (
+              <Badge variant="success">This device</Badge>
+            ) : null}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Started {new Date(session.started_at).toLocaleString()} · Last
+            active {new Date(session.last_activity_at).toLocaleString()}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            IP {session.ip_excerpt ?? "—"}
+          </p>
+        </div>
+      </div>
+      {!session.is_current ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="text-destructive hover:text-destructive"
+          onClick={onRevoke}
+          disabled={busy}
+        >
+          {busy ? "Revoking…" : "Revoke"}
+        </Button>
+      ) : null}
+    </li>
+  );
+}
+
+function formatDuration(totalSeconds: number): string {
+  if (totalSeconds <= 0) return "0s";
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0 && minutes === 0 && seconds === 0) {
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0 && seconds === 0) {
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
 }
 
 // ---------------------------------------------------------------------------

@@ -137,8 +137,11 @@ function ctx(actor: typeof ACTORS.superAdmin | typeof ACTORS.uniAAdmin | typeof 
       id: "s",
       user_id: actor.id,
       token_hash: "h",
+      ip_address: null,
+      user_agent: null,
       expires_at: "2099",
       created_at: "2026",
+      last_activity_at: "2026",
     },
   };
   return { request: new Request(url, requestInit), env: makeEnv(db), url, cookies: {}, auth };

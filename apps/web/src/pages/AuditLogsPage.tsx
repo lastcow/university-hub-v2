@@ -61,6 +61,7 @@ const VIEWER_ROLES: ReadonlySet<string> = new Set([
 
 const CATEGORY_VARIANTS: Record<AuditActionCategory, BadgeProps["variant"]> = {
   auth: "secondary",
+  session: "secondary",
   invitation: "default",
   user: "default",
   university: "default",
