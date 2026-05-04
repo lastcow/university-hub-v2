@@ -46,15 +46,20 @@ pbkdf2-sha256$<iterations>$<salt-base64>$<hash-base64>
 - salt: 16 random bytes
 - derived key: 32 bytes
 
-To mint a new hash offline (used for the dev seed and the production bootstrap
-super_admin):
+To mint a new hash offline (used for the dev seed and the manual production
+bootstrap fallback):
 
 ```bash
 node scripts/hash-password.mjs '<password>'
 ```
 
 Production secrets and real user passwords go through `hashPassword()` from
-the Worker auth module — never write plaintext to the database.
+the Worker auth module — never write plaintext to the database. The first
+super_admin is normally created via `npm run bootstrap:admin` (which calls
+`hashPassword()` server-side); the offline `hash-password.mjs` script is the
+fallback used by the manual `wrangler d1 execute` bootstrap path. See
+[docs/auth.md](auth.md#password-handling) and the
+[README bootstrap section](../README.md#first-admin--bootstrap).
 
 ## Migrations
 
