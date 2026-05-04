@@ -64,6 +64,8 @@ university-hub-v2/
     deployment.md              # full Cloudflare deploy walkthrough
     mailgun.md                 # template names, variables, account setup
     security-ci.md             # dependency scanning + SAST gates (UNI-29)
+    disaster-recovery.md       # D1 backup + restore runbook (UNI-27)
+    incident-response.md       # breach-response playbook + tabletop drill (UNI-35)
   mailgun_templates/           # canonical Mailgun template HTML + plaintext + meta
   scripts/
     bootstrap-admin.mjs            # production: create the first super_admin

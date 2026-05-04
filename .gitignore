@@ -49,3 +49,8 @@ screenshots/
 provisioning/*
 !provisioning/.gitkeep
 !provisioning/README.md
+
+# Incident-response forensic artefacts (see docs/incident-response.md).
+# D1 dumps + hashes captured during a security incident land here; never
+# commit them.
+incidents/

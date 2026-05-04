@@ -364,8 +364,8 @@ In all cases:
    on-demand) — this becomes the "incident DB" you can examine offline
    later.
 2. Notify the customer per the incident-response runbook
-   (`docs/incident-response.md` — see UNI-35 once that issue ships) if
-   the impact warrants it.
+   ([docs/incident-response.md](incident-response.md)) if the impact
+   warrants it.
 3. After recovery, file a post-mortem issue and add a regression check
    if the root cause is reproducible (e.g. a migration smoke test).
 
