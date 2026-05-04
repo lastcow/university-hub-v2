@@ -14,3 +14,4 @@ export * from "./email-log.js";
 export * from "./contact-message.js";
 export * from "./health.js";
 export * from "./dashboard.js";
+export * from "./settings.js";

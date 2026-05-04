@@ -61,6 +61,12 @@ import {
   handleListTeachers,
 } from "./routes/teachers.js";
 import {
+  handleGetMailgunStatus,
+  handleGetSystemStatus,
+  handleUpdateAccountSettings,
+  handleUpdateUniversitySettings,
+} from "./routes/settings.js";
+import {
   handleCreateUniversity,
   handleGetUniversity,
   handleListUniversities,
@@ -127,6 +133,32 @@ export default {
 
     if (url.pathname === "/api/contact" && request.method === "POST") {
       return handleCreateContactMessage(ctx);
+    }
+
+    // Settings (UNI-15). Static paths only; no path params.
+    if (
+      url.pathname === "/api/settings/system-status" &&
+      request.method === "GET"
+    ) {
+      return handleGetSystemStatus(ctx);
+    }
+    if (
+      url.pathname === "/api/settings/mailgun-status" &&
+      request.method === "GET"
+    ) {
+      return handleGetMailgunStatus(ctx);
+    }
+    if (
+      url.pathname === "/api/settings/university" &&
+      request.method === "PATCH"
+    ) {
+      return handleUpdateUniversitySettings(ctx);
+    }
+    if (
+      url.pathname === "/api/settings/account" &&
+      request.method === "PATCH"
+    ) {
+      return handleUpdateAccountSettings(ctx);
     }
 
     // Logs admin (UNI-14). Read-only; RBAC + university scoping inside the

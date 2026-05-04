@@ -23,7 +23,7 @@ import {
   UserSquare2,
 } from "lucide-react";
 
-import type { Role } from "@university-hub/shared";
+import { ROLES, type Role } from "@university-hub/shared";
 
 export interface NavItem {
   label: string;
@@ -224,10 +224,12 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         roles: ADMIN_ONLY,
       },
       {
+        // Account settings are always available to the signed-in user; the
+        // page itself gates the university + Mailgun sections by role.
         label: "Settings",
         to: "/app/settings",
         icon: Settings,
-        roles: ADMIN_ONLY,
+        roles: ROLES,
       },
     ],
   },
