@@ -3,6 +3,7 @@ import type { HealthResponse } from "@university-hub/shared";
 import type { Env } from "./env.js";
 import { buildContext } from "./middleware/auth.js";
 import { handleMe, handleSignIn, handleSignOut } from "./routes/auth.js";
+import { handleCreateContactMessage } from "./routes/contact.js";
 import { handleDashboardSummary } from "./routes/dashboard.js";
 import { errorResponse, jsonOk } from "./utils/responses.js";
 
@@ -39,6 +40,10 @@ export default {
 
     if (url.pathname === "/api/dashboard/summary" && request.method === "GET") {
       return handleDashboardSummary(ctx);
+    }
+
+    if (url.pathname === "/api/contact" && request.method === "POST") {
+      return handleCreateContactMessage(ctx);
     }
 
     return errorResponse(404, "not_found", "The requested resource was not found.");
