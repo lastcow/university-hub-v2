@@ -9,3 +9,11 @@ export interface Faculty {
   created_at: IsoDateString;
   updated_at: IsoDateString;
 }
+
+/** `Faculty` row joined with the underlying user + university/department names. */
+export interface FacultyListItem extends Faculty {
+  name: string;
+  email: string;
+  university_name: string | null;
+  department_name: string | null;
+}

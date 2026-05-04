@@ -9,3 +9,11 @@ export interface Teacher {
   created_at: IsoDateString;
   updated_at: IsoDateString;
 }
+
+/** `Teacher` row joined with the underlying user + university/department names. */
+export interface TeacherListItem extends Teacher {
+  name: string;
+  email: string;
+  university_name: string | null;
+  department_name: string | null;
+}

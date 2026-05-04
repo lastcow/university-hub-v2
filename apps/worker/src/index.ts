@@ -32,6 +32,33 @@ import {
   handleRevokeInvitation,
 } from "./routes/invitations.js";
 import {
+  handleGetFaculty,
+  handleGetMyFaculty,
+  handleListFaculty,
+} from "./routes/faculty.js";
+import {
+  handleGetMyStudent,
+  handleGetStudent,
+  handleListMyStudentCourses,
+  handleListStudents,
+} from "./routes/students.js";
+import {
+  handleGetMyTeacherAssistant,
+  handleGetTeacherAssistant,
+  handleListMyTeacherAssistantCourses,
+  handleListTeacherAssistantCourses,
+  handleListTeacherAssistants,
+} from "./routes/teacher-assistants.js";
+import {
+  handleGetMyTeacher,
+  handleGetTeacher,
+  handleListMyTeacherCourses,
+  handleListMyTeacherStudents,
+  handleListTeacherCourses,
+  handleListTeacherStudents,
+  handleListTeachers,
+} from "./routes/teachers.js";
+import {
   handleCreateUniversity,
   handleGetUniversity,
   handleListUniversities,
@@ -56,6 +83,12 @@ const DEPARTMENT_ID_RE = /^\/api\/departments\/([0-9a-fA-F-]{36})\/?$/;
 const COURSE_ID_RE = /^\/api\/courses\/([0-9a-fA-F-]{36})\/?$/;
 const COURSE_ASSIGNMENT_RE =
   /^\/api\/courses\/([0-9a-fA-F-]{36})\/assignments(?:\/([0-9a-fA-F-]{36}))?\/?$/;
+const STUDENT_ID_RE = /^\/api\/students\/([0-9a-fA-F-]{36})\/?$/;
+const FACULTY_ID_RE = /^\/api\/faculty\/([0-9a-fA-F-]{36})\/?$/;
+const TEACHER_ID_RE =
+  /^\/api\/teachers\/([0-9a-fA-F-]{36})(?:\/(courses|students))?\/?$/;
+const TEACHER_ASSISTANT_ID_RE =
+  /^\/api\/teacher-assistants\/([0-9a-fA-F-]{36})(?:\/(courses))?\/?$/;
 
 export default {
   async fetch(request, env): Promise<Response> {
@@ -218,6 +251,86 @@ export default {
       if (request.method === "DELETE") {
         return handleDeleteCourse(ctx, courseId);
       }
+    }
+
+    // Students directory (UNI-13). Static `/me*` paths first so the id regex
+    // doesn't try to interpret `me` as a UUID.
+    if (url.pathname === "/api/students" && request.method === "GET") {
+      return handleListStudents(ctx);
+    }
+    if (url.pathname === "/api/students/me" && request.method === "GET") {
+      return handleGetMyStudent(ctx);
+    }
+    if (
+      url.pathname === "/api/students/me/courses" &&
+      request.method === "GET"
+    ) {
+      return handleListMyStudentCourses(ctx);
+    }
+    const studentMatch = STUDENT_ID_RE.exec(url.pathname);
+    if (studentMatch && request.method === "GET") {
+      return handleGetStudent(ctx, studentMatch[1] as string);
+    }
+
+    // Faculty directory (UNI-13).
+    if (url.pathname === "/api/faculty" && request.method === "GET") {
+      return handleListFaculty(ctx);
+    }
+    if (url.pathname === "/api/faculty/me" && request.method === "GET") {
+      return handleGetMyFaculty(ctx);
+    }
+    const facultyMatch = FACULTY_ID_RE.exec(url.pathname);
+    if (facultyMatch && request.method === "GET") {
+      return handleGetFaculty(ctx, facultyMatch[1] as string);
+    }
+
+    // Teachers directory + nested courses/students (UNI-13).
+    if (url.pathname === "/api/teachers" && request.method === "GET") {
+      return handleListTeachers(ctx);
+    }
+    if (url.pathname === "/api/teachers/me" && request.method === "GET") {
+      return handleGetMyTeacher(ctx);
+    }
+    if (url.pathname === "/api/teachers/me/courses" && request.method === "GET") {
+      return handleListMyTeacherCourses(ctx);
+    }
+    if (url.pathname === "/api/teachers/me/students" && request.method === "GET") {
+      return handleListMyTeacherStudents(ctx);
+    }
+    const teacherMatch = TEACHER_ID_RE.exec(url.pathname);
+    if (teacherMatch && request.method === "GET") {
+      const teacherId = teacherMatch[1] as string;
+      const sub = teacherMatch[2];
+      if (!sub) return handleGetTeacher(ctx, teacherId);
+      if (sub === "courses") return handleListTeacherCourses(ctx, teacherId);
+      if (sub === "students") return handleListTeacherStudents(ctx, teacherId);
+    }
+
+    // Teacher-assistants directory + nested courses (UNI-13).
+    if (
+      url.pathname === "/api/teacher-assistants" &&
+      request.method === "GET"
+    ) {
+      return handleListTeacherAssistants(ctx);
+    }
+    if (
+      url.pathname === "/api/teacher-assistants/me" &&
+      request.method === "GET"
+    ) {
+      return handleGetMyTeacherAssistant(ctx);
+    }
+    if (
+      url.pathname === "/api/teacher-assistants/me/courses" &&
+      request.method === "GET"
+    ) {
+      return handleListMyTeacherAssistantCourses(ctx);
+    }
+    const taMatch = TEACHER_ASSISTANT_ID_RE.exec(url.pathname);
+    if (taMatch && request.method === "GET") {
+      const taId = taMatch[1] as string;
+      const sub = taMatch[2];
+      if (!sub) return handleGetTeacherAssistant(ctx, taId);
+      if (sub === "courses") return handleListTeacherAssistantCourses(ctx, taId);
     }
 
     return errorResponse(404, "not_found", "The requested resource was not found.");
