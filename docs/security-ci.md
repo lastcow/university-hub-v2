@@ -348,6 +348,228 @@ git config --local core.hooksPath scripts/git-hooks
 The hook is per-checkout (it lives under the local `.git` config), so
 every developer has to install it once per clone.
 
+### 5c. History rewrite (after rotation only)
+
+When a literal credential makes it past both layers above and lands in a
+commit on the remote (the pre-commit hook was bypassed, the value
+matched no known prefix, or the secret was added long enough ago that
+it predates the hook), you have a leaked-secret incident. Treat it as
+S1 per [docs/incident-response.md → severity tiers](incident-response.md#severity-tiers)
+and walk the rotation steps there first. Only **after** rotation should
+you consider rewriting history to scrub the literal from past commits.
+
+> **Rotation is non-negotiable; rewrite is hygiene.** The leaked value
+> must be assumed compromised the moment it reached any remote — by
+> the time you're considering a rewrite, every fetcher, mirror, fork,
+> and `gh` archive endpoint has already had access. Rewriting commits
+> only prevents *future* cloners from seeing the literal. It is **not**
+> a substitute for rotating the credential at its source. A rewrite
+> without rotation is theatre; a rotation without rewrite is correct
+> (the value is dead, the public copy is just noise).
+
+#### When to rewrite vs. leave history intact
+
+| Situation | Recommendation |
+|---|---|
+| Leaked commit is recent (hours / single-digit days), on a single branch, **not** referenced from any other branch / tag / open PR / external mirror, and the team is small enough to coordinate a re-clone. | **Rewrite.** The cost (a re-clone notice to a handful of collaborators) is low and the value is real. |
+| Leaked commit is old, widely referenced (other branches point at it, release tags reference it, downstream forks exist, external CI / archives may cache it). | **Leave history intact.** The rewrite breaks every checkout, every release tag becomes orphaned, and you cannot undo the third-party copies anyway. Rely on rotation alone. |
+| Leaked commit is on a feature branch that has not yet been merged. | **Force-push the branch.** No `filter-repo` needed — interactive rebase or `git commit --amend` on the offending commit, then `git push --force-with-lease`. Notify any reviewer who already pulled the branch. |
+| Public repo with unknown external cloners (e.g. open-source). | **Leave history intact.** The literal is already mirrored at the GitHub archive program / Software Heritage / random local clones; rewriting only protects future fetchers. Rotation + a public security advisory are the right responses. |
+
+If you're unsure, the safer default is **don't rewrite**. The damage
+(broken checkouts, dangling tags, surprised collaborators) is
+immediate; the upside (one fewer place a dead credential lives) is
+marginal once rotation has happened.
+
+#### Recipe — `git filter-repo --replace-text`
+
+This is the recipe for the cases above where rewrite is the right
+call. Run from a fresh, dedicated clone — never from your working
+checkout, since `git filter-repo` refuses to operate on a non-fresh
+clone by default and forcing it from a stale checkout invites mistakes.
+
+**Prerequisites.** `git filter-repo` is not in core git; install it from
+the maintainer's release (`pip install git-filter-repo`, `brew install
+git-filter-repo`, or your distro package manager). Do not use the
+deprecated `git filter-branch` — it is slow, footgun-prone, and
+GitHub itself recommends `filter-repo`.
+
+**1. Notify collaborators *before* rewriting.** Post in the operator
+incident channel: "History rewrite imminent on `<repo>` `main` —
+hold all pushes for the next 30 minutes; expect a re-clone instruction
+once it lands." If anyone has unpushed work, they finish or stash it
+now.
+
+**2. Take a backup of the bare repo.** This is the rollback artefact
+if the rewrite goes sideways. Cloudflare backup secrets, R2 lifecycle,
+none of that protects a force-push gone wrong.
+
+```bash
+# Run from a scratch directory outside the working checkout.
+mkdir -p ~/incident-rewrite/$(date -u +%Y%m%dT%H%M%SZ) && cd $_
+git clone --mirror https://github.com/<org>/<repo>.git pre-rewrite.git
+# pre-rewrite.git is a bare clone of the entire remote — keep it
+# offline alongside the forensic D1 snapshot from the runbook.
+
+# Record the pre-rewrite head of every ref, so review can confirm the
+# new history matches the old where it should.
+git -C pre-rewrite.git for-each-ref \
+  --format='%(refname) %(objectname)' > pre-rewrite.refs
+```
+
+The mirror clone preserves every ref (branches, tags, notes, PR refs)
+exactly as the remote has them. Git objects are content-addressed, so
+the clone itself is its own integrity check — no separate hash
+needed. If the rewrite needs to be rolled back, `git push --mirror`
+from this clone restores the remote to its pre-rewrite state.
+
+**3. Make a fresh clone for the rewrite itself.** Do not rewrite in
+the mirror clone (you need that pristine) and do not rewrite in your
+day-to-day working checkout (`filter-repo` will refuse, or you'll
+forget which clone is which).
+
+```bash
+cd ~/incident-rewrite/<stamp>
+git clone https://github.com/<org>/<repo>.git rewrite
+cd rewrite
+```
+
+**4. Build the `replacements.txt` file.** Each line is `LITERAL==>REPLACEMENT`.
+List every variant of the leaked value you want scrubbed (including
+truncated copies, base64'd copies, and any quoting variants that may
+appear in tests / configs).
+
+```text
+# replacements.txt — one literal per line, no surrounding quotes.
+# Use a placeholder that's clearly not a real key.
+key-abcdef0123456789abcdef0123456789==>***REMOVED-MAILGUN-KEY***
+# Add additional lines for any other leaked literals discovered in the
+# same incident.
+```
+
+Save this file *outside* the clone (in `~/incident-rewrite/<stamp>/`),
+not inside it — `filter-repo` reads it before rewriting.
+
+**5. Run the rewrite.**
+
+```bash
+# From inside the `rewrite/` clone:
+git filter-repo --replace-text ../replacements.txt
+```
+
+`filter-repo` rewrites every commit on every ref, replacing each match
+with its placeholder. The original commit hashes change; tags are
+moved; the working tree is left in a clean state pointing at the
+rewritten history. Note that `filter-repo` **removes the `origin`
+remote** by design (so you cannot accidentally push back to a remote
+configured to reject force-pushes); you re-add it in the next step.
+
+**6. Reviewer sign-off before force-push.** A second pair of eyes
+confirms the diff before it lands. The reviewer checks:
+
+- `git log --all --oneline | wc -l` matches the pre-rewrite count
+  minus any commits the rewrite collapsed to empty.
+- `git log -p --all -S '<one-of-the-leaked-literals>'` returns nothing
+  (the literal is gone from history).
+- Sample a handful of unrelated commits with `git show <sha>` —
+  confirm the non-secret content is byte-identical to the pre-rewrite
+  copy in `pre-rewrite.git`.
+- The current `HEAD` of the protected branch (typically `main`)
+  resolves to a tree the reviewer recognises (not an empty tree, not a
+  truncated history).
+
+Record the reviewer's name + the new `HEAD` SHA in the incident log
+before continuing. **No solo force-pushes.**
+
+**7. Force-push.** Re-add the remote, fetch once (so the lease check
+in the push has something to compare against), and push every ref.
+Branch protection on `main` blocks force-push by default — you must
+temporarily relax this **just** for the operator account performing
+the rewrite, push, then re-tighten. Document the protection toggle in
+the incident log as a separate audit-worthy event.
+
+```bash
+git remote add origin https://github.com/<org>/<repo>.git
+
+# Fetch (without merging) so that --force-with-lease has the
+# pre-rewrite remote refs to compare against. If anyone snuck in a
+# push during review despite step 1, the lease check catches it.
+git fetch origin
+
+# Push every branch and tag.
+git push --force-with-lease --all origin
+git push --force-with-lease --tags origin
+```
+
+If GitHub rejects the push for branch-protection rules, do **not**
+loosen the protection beyond the minimum needed. Disable "require
+linear history" / "do not allow force pushes" only for the duration
+of this push, then re-enable immediately afterwards.
+
+(The fetch in this step pulls the leaked literal back into the local
+clone as unreferenced git objects. That is fine — the rewrite clone is
+throwaway, and the mirror clone from step 2 already contains the same
+objects offline. Delete `~/incident-rewrite/<stamp>/rewrite/` once the
+incident is closed; keep the mirror until the post-mortem is filed.)
+
+**8. Tell every collaborator to re-clone.** Active checkouts of the
+old history will diverge instantly on their next `git fetch`; the
+cleanest recovery is a fresh clone, not `git pull --rebase`. Pin a
+message in the incident channel and the team chat:
+
+> History rewrite landed on `<repo>` at `<UTC timestamp>` (new `main`
+> HEAD: `<sha>`). **Delete your local clone and re-clone.** Do not
+> attempt to rebase — it will silently re-introduce the leaked
+> literal from your reflog. Stash any in-flight work as a patch
+> (`git diff > ~/wip.patch`) before deleting.
+
+Open PRs against the old history are dead — they reference commits
+that no longer exist on the remote. The author re-creates them
+against the new history after re-cloning.
+
+**9. Verify upstream caches.** GitHub's web UI clears stale tree
+references quickly, but caches do exist:
+
+- Open the previously-leaked commit URL in an incognito window — it
+  should 404.
+- Check the GitHub secret-scanning alert that originally fired — close
+  it with a comment linking the incident.
+- If the repo is forked, fetch a fresh copy of one fork and search it
+  for the literal. You cannot rewrite forks; that is what rotation is
+  for.
+
+**10. Re-tighten branch protection.** Restore the protection toggles
+you relaxed in step 7. Confirm with `gh api repos/<org>/<repo>/branches/main/protection`
+or the **Settings → Branches** UI.
+
+#### Failure mode — rolling back the rewrite
+
+If review reveals the rewrite is wrong (wrong literal scrubbed, too
+much scrubbed, history cratered), restore from the mirror clone before
+anyone re-clones:
+
+```bash
+cd ~/incident-rewrite/<stamp>/pre-rewrite.git
+git push --mirror https://github.com/<org>/<repo>.git
+```
+
+`--mirror` overwrites every ref on the remote with the mirror's view.
+Then re-tighten branch protection and post a "rewrite reverted"
+notice — collaborators who have not yet re-cloned can resume their
+existing checkouts as if nothing happened.
+
+#### What this recipe does not cover
+
+- **Forks and downstream mirrors.** You cannot rewrite a clone you
+  don't own. Open a coordinated security advisory and rely on
+  rotation; assume the literal is permanent in those copies.
+- **Already-archived snapshots** (GitHub Archive Program, Software
+  Heritage, the Wayback Machine, third-party vendor mirrors). These
+  are write-once. Same answer: rotation is the remediation.
+- **Rewriting away non-secret history** (someone's name, an
+  embarrassing commit message). That's a different conversation —
+  outside the security-incident playbook.
+
 ---
 
 ## End-to-end smoke tests
