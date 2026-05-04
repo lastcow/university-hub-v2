@@ -14,12 +14,27 @@ import {
   handleResendInvitation,
   handleRevokeInvitation,
 } from "./routes/invitations.js";
+import {
+  handleCreateUniversity,
+  handleGetUniversity,
+  handleListUniversities,
+  handleUpdateUniversity,
+} from "./routes/universities.js";
+import {
+  handleGetUser,
+  handleListUsers,
+  handleUpdateUser,
+  handleUpdateUserRole,
+  handleUpdateUserStatus,
+} from "./routes/users.js";
 import { errorResponse, jsonOk } from "./utils/responses.js";
 
 export type { Env } from "./env.js";
 
 const INVITATION_ID_RE =
   /^\/api\/invitations\/([0-9a-fA-F-]{36})(?:\/(revoke|resend))?\/?$/;
+const UNIVERSITY_ID_RE = /^\/api\/universities\/([0-9a-fA-F-]{36})\/?$/;
+const USER_ID_RE = /^\/api\/users\/([0-9a-fA-F-]{36})(?:\/(role|status))?\/?$/;
 
 export default {
   async fetch(request, env): Promise<Response> {
@@ -84,6 +99,46 @@ export default {
       }
       if (subAction === "resend" && request.method === "POST") {
         return handleResendInvitation(ctx, invitationId);
+      }
+    }
+
+    // Universities CRUD (UNI-11)
+    if (url.pathname === "/api/universities" && request.method === "GET") {
+      return handleListUniversities(ctx);
+    }
+    if (url.pathname === "/api/universities" && request.method === "POST") {
+      return handleCreateUniversity(ctx);
+    }
+    const uniMatch = UNIVERSITY_ID_RE.exec(url.pathname);
+    if (uniMatch) {
+      const universityId = uniMatch[1] as string;
+      if (request.method === "GET") {
+        return handleGetUniversity(ctx, universityId);
+      }
+      if (request.method === "PATCH") {
+        return handleUpdateUniversity(ctx, universityId);
+      }
+    }
+
+    // Users management (UNI-11)
+    if (url.pathname === "/api/users" && request.method === "GET") {
+      return handleListUsers(ctx);
+    }
+    const userMatch = USER_ID_RE.exec(url.pathname);
+    if (userMatch) {
+      const userId = userMatch[1] as string;
+      const sub = userMatch[2];
+      if (!sub && request.method === "GET") {
+        return handleGetUser(ctx, userId);
+      }
+      if (!sub && request.method === "PATCH") {
+        return handleUpdateUser(ctx, userId);
+      }
+      if (sub === "role" && request.method === "PATCH") {
+        return handleUpdateUserRole(ctx, userId);
+      }
+      if (sub === "status" && request.method === "PATCH") {
+        return handleUpdateUserStatus(ctx, userId);
       }
     }
 
