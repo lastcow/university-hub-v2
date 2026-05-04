@@ -60,14 +60,41 @@ npm run typecheck
 This runs `tsc -b` across all workspaces. With the current scaffold (no source
 files yet) it should complete with no errors.
 
-### Run frontend / worker locally
+### Run frontend + worker locally
 
-_TBD — wired up in UNI-3 (Cloudflare/Vite/Tailwind config)._
+```bash
+npm run dev
+```
+
+Boots both processes via `concurrently`:
+
+- **Worker** (`apps/worker`) on `http://127.0.0.1:8787` via `wrangler dev --local`.
+  Uses a local sqlite-backed D1 under `.wrangler/` — no Cloudflare resources
+  are touched (production D1 is provisioned by QA on deploy, see UNI-16).
+- **Web** (`apps/web`) on `http://127.0.0.1:5173` via Vite. `/api/*` requests
+  are proxied to the Worker.
+
+To run them individually:
+
+```bash
+npm run dev:worker     # wrangler dev --local on :8787
+npm run dev:web        # vite on :5173
+```
+
+Smoke-test the Worker:
+
+```bash
+curl http://127.0.0.1:8787/api/health
+# => {"ok":true}
+```
 
 ### Database (D1)
 
-_TBD — migrations and seed land in a later issue. Migrations live under
-`migrations/` and are applied with `wrangler d1 migrations apply DB`._
+For local dev, `wrangler dev --local` uses a sqlite file under `.wrangler/`
+(gitignored) — no Cloudflare account or live D1 needed. The `DB` binding is
+declared in `apps/worker/wrangler.toml`. Real migrations and seed land in a
+later issue under `migrations/` and are applied with
+`wrangler d1 migrations apply DB`.
 
 ## Cloudflare setup
 

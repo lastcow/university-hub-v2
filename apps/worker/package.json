@@ -5,9 +5,15 @@
   "type": "module",
   "main": "./src/index.ts",
   "scripts": {
-    "typecheck": "tsc -b --pretty"
+    "typecheck": "tsc -b --pretty",
+    "dev": "wrangler dev --local --port 8787",
+    "build": "wrangler deploy --dry-run --outdir dist"
   },
   "dependencies": {
     "@university-hub/shared": "*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20241218.0",
+    "wrangler": "3.99.0"
   }
 }

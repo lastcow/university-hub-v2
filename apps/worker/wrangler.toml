@@ -1,0 +1,24 @@
+name = "university-hub-v2"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Local dev server. The web app proxies /api/* here via Vite.
+[dev]
+port = 8787
+local_protocol = "http"
+
+# Frontend assets (Cloudflare Pages-style). Worker serves /api/* and falls
+# through to static assets for everything else once the SPA is built.
+[assets]
+directory = "../web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# D1 database binding — `env.DB` in the Worker.
+# The actual D1 database is provisioned by QA on deploy (see UNI-16).
+# For local dev, `wrangler dev --local` uses a sqlite file under .wrangler/.
+[[d1_databases]]
+binding = "DB"
+database_name = "university-hub-v2"
+database_id = "00000000-0000-0000-0000-000000000000"
