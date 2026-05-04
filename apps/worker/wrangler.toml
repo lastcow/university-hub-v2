@@ -8,12 +8,12 @@ compatibility_flags = ["nodejs_compat"]
 port = 8787
 local_protocol = "http"
 
-# Frontend assets (Cloudflare Pages-style). Worker serves /api/* and falls
-# through to static assets for everything else once the SPA is built.
-[assets]
-directory = "../web/dist"
-binding = "ASSETS"
-not_found_handling = "single-page-application"
+# This Worker serves only `/api/*`. The SPA ships separately via Cloudflare
+# Pages (project: university-hub-v2-web) — see docs/deployment.md. CORS for
+# the cross-origin Pages → Worker fetches is driven by ALLOWED_WEB_ORIGINS.
+[vars]
+APP_ENV = "production"
+ALLOWED_WEB_ORIGINS = "https://university-hub-v2-web.pages.dev"
 
 # D1 database binding — `env.DB` in the Worker.
 # The actual D1 database is provisioned by QA on deploy (see UNI-16).

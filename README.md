@@ -10,16 +10,18 @@ day-to-day operator handbook.
 
 ## Tech stack
 
-- **Frontend:** React 18 + TypeScript + Vite + Tailwind + shadcn/ui (deployed
-  to Cloudflare Pages or served from the Worker via the `[assets]` binding).
-- **Backend:** Cloudflare Workers + TypeScript. No framework — a single
-  `fetch()` handler routes `/api/*` paths and falls through to the SPA assets.
+- **Frontend:** React 18 + TypeScript + Vite + Tailwind + shadcn/ui, deployed
+  to Cloudflare Pages (project `university-hub-v2-web`).
+- **Backend:** Cloudflare Workers + TypeScript, deployed as `university-hub-v2`.
+  No framework — a single `fetch()` handler routes `/api/*` paths. The Worker
+  is API-only; anything outside `/api/*` returns a JSON 404.
 - **Database:** Cloudflare D1 (SQLite) via `env.DB`. SQL migrations under
   `migrations/` at the repo root, applied with `wrangler d1 migrations apply`.
 - **Email:** Mailgun (templates managed in the Mailgun dashboard, never in
   code). The Worker only ships template name + variables — never raw HTML.
 - **Auth:** Email + password, PBKDF2-SHA256 hashing via Web Crypto, SHA-256
-  hashed session tokens, HttpOnly `Lax` cookies. Invitation-only onboarding.
+  hashed session tokens. HttpOnly cookies, `SameSite=None; Secure` in
+  production (cross-site SPA → API), `SameSite=Lax` in dev.
 - **Package manager:** **npm** (npm workspaces).
 - **Node:** >= 20.
 
@@ -198,19 +200,21 @@ foreign_keys`, password hash format) lives in [docs/database.md](docs/database.m
 
 ## Cloudflare setup
 
-Default resource names — change them in `apps/worker/wrangler.toml` and
-the deploy walkthrough if you want to rename.
+The app ships as **two separate Cloudflare services**:
 
-| Resource      | Default name            |
-|---------------|-------------------------|
-| D1 database   | `university-hub-v2`     |
-| Worker        | `university-hub-v2`     |
-| Pages project | `university-hub-v2`     |
+| Resource      | Default name              | Hostname (default)                                  |
+|---------------|---------------------------|-----------------------------------------------------|
+| D1 database   | `university-hub-v2`       | (binding only — no public URL)                      |
+| Worker        | `university-hub-v2`       | `https://university-hub-v2.<account>.workers.dev/`  |
+| Pages project | `university-hub-v2-web`   | `https://university-hub-v2-web.pages.dev/`          |
 
-The Worker also serves the built SPA via the `[assets]` binding pointed at
-`apps/web/dist`, so a single `wrangler deploy` ships both frontend and
-backend if you prefer not to use Pages — the Worker URL works as a complete
-deploy target. See [docs/deployment.md](docs/deployment.md) for both paths.
+The Worker serves only `/api/*`. The Vite-built SPA lives on the Pages
+project and reaches the Worker cross-origin via `fetch(...)`. Cross-origin
+requests are gated by the `ALLOWED_WEB_ORIGINS` Worker var (defaults to the
+Pages production URL; add custom domains and preview wildcards as needed —
+see [docs/deployment.md](docs/deployment.md#cors-allowlist)). Custom
+domains (`app.example.com` / `api.example.com` style) are documented in
+the same file as a future step.
 
 ### Wrangler secret commands
 
@@ -297,9 +301,15 @@ SUPPORT_EMAIL=support@example.com
 Frontend (`apps/web/.env.example`):
 
 ```
+# VITE_API_BASE_URL=https://university-hub-v2.<your-account>.workers.dev
 VITE_APP_NAME=University Hub
-VITE_API_BASE_URL=http://localhost:8787
 ```
+
+In dev, leave `VITE_API_BASE_URL` unset — the Vite dev server proxies
+`/api/*` to the local Worker on `:8787` (see `apps/web/vite.config.ts`).
+In production builds (e.g. on the Cloudflare Pages project), set it to
+the deployed Worker origin so the SPA on `*.pages.dev` knows where the
+API lives.
 
 Only `VITE_*`-prefixed vars are exposed to the browser. Do not put secrets
 in `.env`.
@@ -307,9 +317,9 @@ in `.env`.
 ## Deployment
 
 Detailed end-to-end Cloudflare deploy walkthrough — `wrangler login`,
-provisioning D1, applying migrations, setting secrets, deploying Worker +
-Pages, verifying — lives in [docs/deployment.md](docs/deployment.md). High
-level:
+provisioning D1, applying migrations, setting secrets, deploying Worker
+*and* Pages, verifying CORS + cookies — lives in
+[docs/deployment.md](docs/deployment.md). High level:
 
 ```bash
 # 1. Authenticate
@@ -321,14 +331,24 @@ npx wrangler d1 create university-hub-v2
 # 3. Apply migrations against the live DB.
 npm run db:migrate                 # remote D1
 
-# 4. Set secrets (see "Wrangler secret commands" above).
+# 4. Provision the Pages project (one-time).
+cd apps/web && npx wrangler pages project create university-hub-v2-web \
+  --production-branch=main && cd -
 
-# 5. Build frontend, then deploy the Worker (which serves the built SPA).
-npm run build
+# 5. Set Worker secrets (see "Wrangler secret commands" above).
+
+# 6. Build the SPA pointing at the deployed Worker, then deploy to Pages.
+VITE_API_BASE_URL=https://university-hub-v2.<your-account>.workers.dev \
+  npm run build
+npx wrangler pages deploy apps/web/dist --project-name=university-hub-v2-web
+
+# 7. Deploy the API-only Worker.
 cd apps/worker && npx wrangler deploy
 ```
 
-Or deploy to Pages separately — see [docs/deployment.md](docs/deployment.md).
+Open the Pages URL (`https://university-hub-v2-web.pages.dev/`) to use
+the app. Custom domains for both services are an optional follow-up — see
+[docs/deployment.md → Custom domains](docs/deployment.md#custom-domains-future-step).
 
 ## Auth flow
 
@@ -457,6 +477,8 @@ the system.
 | `npm run dev:worker` fails with `D1_ERROR: no such table: users`| Migrations not applied to the local DB. Run `npm run db:migrate:local`.                                                                                            |
 | Sign-in always returns `invalid_credentials`                    | Wrong password (default dev: `DevSuperAdmin!2026`), or the user's `status` is not `active`. Confirm with `db:exec:local` `SELECT email, status FROM users`.        |
 | `/app/*` redirects back to `/sign-in` immediately               | Session cookie missing or expired. Sign in again; check that `SESSION_COOKIE_NAME` matches between Worker env and the cookie the browser sends.                    |
+| `/api/auth/sign-in` succeeds but `/api/auth/me` returns 401     | Cross-site cookie not attached. Confirm the response from sign-in includes `Set-Cookie: ...; SameSite=None; Secure`, and that `APP_ENV=production` is set on the deployed Worker so the cookie helper picks the cross-site attributes. |
+| Browser logs `CORS error` / `No 'Access-Control-Allow-Origin'`  | The Pages origin is not in `ALLOWED_WEB_ORIGINS`. Update via `npx wrangler secret put ALLOWED_WEB_ORIGINS` (comma-separated, supports `https://*.<project>.pages.dev` for previews). |
 | Mailgun status reads **Missing configuration**                  | Expected before secrets are provisioned. Once you set `MAILGUN_API_KEY` / `MAILGUN_DOMAIN` / `MAILGUN_FROM_EMAIL` / `MAILGUN_FROM_NAME` it will flip to **Configured**. |
 | Invitation email shows `failed` in `/app/email-logs`            | The Worker stored the invitation but Mailgun rejected the send (often: domain not verified, template not authored, key revoked). Click **Resend** after fixing.    |
 | Invitation acceptance returns `invitation_invalid`              | Token consumed, expired, or revoked. Have an admin issue a fresh invitation.                                                                                       |

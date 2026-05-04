@@ -1,10 +1,17 @@
 # Deployment
 
-End-to-end walkthrough for shipping University Hub to Cloudflare. The repo
-is designed so a single Worker can serve both the API (`/api/*`) and the
-built SPA (everything else) via the `[assets]` binding in
-`apps/worker/wrangler.toml`. You can also deploy the frontend separately to
-Cloudflare Pages — both paths are documented below.
+End-to-end walkthrough for shipping University Hub to Cloudflare. The app
+ships as **two separate Cloudflare services**:
+
+- **Cloudflare Pages** — `university-hub-v2-web` — serves the Vite-built SPA
+  from `apps/web/dist/` at `https://university-hub-v2-web.pages.dev/`.
+- **Cloudflare Worker** — `university-hub-v2` — serves only `/api/*` at
+  `https://university-hub-v2.<your-account>.workers.dev/`. The browser
+  reaches it cross-origin from the Pages SPA.
+
+The SPA does cross-site `fetch(...)` calls to the Worker with credentials,
+which means CORS and cross-site cookies have to be configured correctly —
+this doc covers both.
 
 > **Audience:** the operator running the first production deploy. After
 > that, this doc is a reference for re-deploys, rollback, and adding new
@@ -12,8 +19,8 @@ Cloudflare Pages — both paths are documented below.
 
 ## Prerequisites
 
-- Cloudflare account with Workers + D1 access (the free plan is sufficient
-  for small deployments).
+- Cloudflare account with Workers + Pages + D1 access (the free plan is
+  sufficient for small deployments).
 - `npx wrangler` available (no global install required — invoke via
   `npx wrangler` inside `apps/worker/`).
 - Node.js >= 20 and npm >= 9 locally.
@@ -74,10 +81,34 @@ server-side, so re-running is safe.
 > tracking — if this is a fresh DB, you'd be opting in by name with
 > `wrangler d1 execute`.)
 
-## 4. Set Worker secrets
+## 4. Provision the Cloudflare Pages project (one-time)
 
-Run all of these from inside `apps/worker/` so wrangler picks up the
-binding config:
+The Pages project name doubles as the default `*.pages.dev` hostname.
+`university-hub-v2-web` is the recommended name (it can't collide with the
+Worker, which is also `university-hub-v2`):
+
+```bash
+cd apps/web
+npx wrangler pages project create university-hub-v2-web \
+  --production-branch=main
+```
+
+If you'd rather use the dashboard, the equivalent is **Workers & Pages →
+Create → Pages → Direct Upload → Project name: `university-hub-v2-web`**.
+
+If `wrangler pages project list` shows the project already exists (e.g.
+QA created it on a previous attempt), skip this step.
+
+> **GitHub-integrated builds are nice-to-have, not required.** The
+> walkthrough below uses the manual `wrangler pages deploy` command so
+> the Developer's branch can be rolled out without wiring up the Pages
+> GitHub app first. Once you're happy, hook the project to the GitHub
+> repo via **Pages → Settings → Builds & deployments** for auto-deploy.
+
+## 5. Set Worker secrets and vars
+
+Run all secret commands from inside `apps/worker/` so wrangler picks up
+the binding config:
 
 ```bash
 cd apps/worker
@@ -85,10 +116,12 @@ cd apps/worker
 # Session signing
 npx wrangler secret put SESSION_SECRET
 
-# Public origin (used for invitation URLs in Mailgun templates)
+# Public web URL — used inside Mailgun email templates (invitation /
+# welcome / password-reset URLs). Point it at the Pages origin, NOT the
+# Worker origin: links in emails open the SPA, which then calls the API.
 npx wrangler secret put APP_BASE_URL
-# e.g. https://university-hub-v2.<your-account>.workers.dev
-# or your custom domain such as https://hub.example.com
+# e.g. https://university-hub-v2-web.pages.dev
+# or your custom Pages domain (e.g. https://app.example.com)
 
 # Mailgun (see docs/mailgun.md for what to set them to)
 npx wrangler secret put MAILGUN_API_KEY
@@ -98,6 +131,23 @@ npx wrangler secret put MAILGUN_FROM_NAME
 # optional
 npx wrangler secret put MAILGUN_REGION
 npx wrangler secret put SUPPORT_EMAIL
+```
+
+The `[vars]` block in `wrangler.toml` declares two non-secret values that
+ship with every Worker deploy:
+
+| Var                   | Default                                          | Purpose                                                                         |
+|-----------------------|--------------------------------------------------|---------------------------------------------------------------------------------|
+| `APP_ENV`             | `production`                                     | Flips cookie defaults to `SameSite=None; Secure` (see "Cookies" below).         |
+| `ALLOWED_WEB_ORIGINS` | `https://university-hub-v2-web.pages.dev`        | Comma-separated CORS allowlist. Add preview hosts here (see "CORS" below).      |
+
+To change either without redeploying the code, override per environment:
+
+```bash
+cd apps/worker
+# Add a custom-domain origin alongside the default Pages URL.
+echo "https://university-hub-v2-web.pages.dev,https://app.example.com" \
+  | npx wrangler secret put ALLOWED_WEB_ORIGINS
 ```
 
 > **Mailgun is not yet provisioned.** This is fine. If you skip the four
@@ -120,52 +170,104 @@ npx wrangler secret list
 `wrangler secret list` only shows names, never values — Cloudflare itself
 does not expose them after the initial `put`.
 
-## 5. Build the frontend
+### CORS allowlist
+
+The Worker accepts cross-origin API calls only from origins listed in
+`ALLOWED_WEB_ORIGINS`. The format is comma-separated; entries can be:
+
+| Entry                                          | Matches                                          |
+|------------------------------------------------|--------------------------------------------------|
+| `https://university-hub-v2-web.pages.dev`      | the production Pages URL exactly                 |
+| `https://*.university-hub-v2-web.pages.dev`    | every Pages preview deploy (`<sha>.<project>.pages.dev`) |
+| `https://app.example.com`                      | a custom-domain Pages alias                      |
+
+`http://localhost:5173` is always allowed in dev (`APP_ENV=development`,
+default during `wrangler dev`). It is **not** allowed in production unless
+you list it explicitly.
+
+Disallowed origins still receive a `204` for an `OPTIONS` preflight and a
+plain JSON response for other methods — but with no `Access-Control-Allow-*`
+headers, so the browser blocks the response. The Worker never returns `*`
+in `Access-Control-Allow-Origin`; it always echoes a single matched origin
+because the SPA uses `credentials: 'include'`.
+
+### Cookies (cross-site)
+
+Because the SPA on `*.pages.dev` and the Worker on `*.workers.dev` are
+different sites, the session cookie has to be `SameSite=None; Secure`.
+Otherwise the browser refuses to attach it on `fetch(...)`. The cookie
+helper in `apps/worker/src/utils/cookies.ts` does this automatically:
+
+| `APP_ENV`         | Cookie attributes                              |
+|-------------------|------------------------------------------------|
+| `production`      | `HttpOnly; Secure; SameSite=None`              |
+| `development`     | `HttpOnly; SameSite=Lax` (no `Secure`, so http://localhost works) |
+
+A `Domain=` attribute is intentionally **not set** — the cookie is host-only
+on the Worker host, which is exactly what we want when only the SPA uses
+it. If you later move the Worker behind a custom domain (e.g. `api.example.com`)
+and want to share the cookie with sibling subdomains, that's the moment to
+add `Domain=example.com`; today it would be a footgun.
+
+## 6. Build and deploy the SPA to Pages
 
 From the repo root:
 
 ```bash
-npm install
-npm run build
+# Build the SPA. Set VITE_API_BASE_URL so the client points at the Worker
+# instead of relative /api/... (which only works in dev with the Vite proxy).
+VITE_API_BASE_URL=https://university-hub-v2.<your-account>.workers.dev \
+  npm run build
+
+# Deploy the built SPA to Cloudflare Pages.
+npx wrangler pages deploy apps/web/dist --project-name=university-hub-v2-web
 ```
 
-Outputs to `apps/web/dist/`, which the Worker's `[assets]` binding serves.
+Wrangler prints the deploy URL on success — both the unique preview
+(`https://<sha>.university-hub-v2-web.pages.dev`) and the production alias
+(`https://university-hub-v2-web.pages.dev`).
 
-## 6. Deploy
+### Setting `VITE_API_BASE_URL` permanently on Pages
 
-### Path A — single Worker serves API + SPA (recommended)
+If you wire the Pages project to GitHub for auto-deploys, set the env var
+in the dashboard so you don't have to pass it on every `npm run build`:
+
+**Pages → Settings → Environment variables → Production**:
+
+| Name                | Value                                                       |
+|---------------------|-------------------------------------------------------------|
+| `VITE_API_BASE_URL` | `https://university-hub-v2.<your-account>.workers.dev`      |
+| `VITE_APP_NAME`     | `University Hub` (optional)                                 |
+
+Build settings:
+
+- **Framework preset:** None (Vite)
+- **Build command:** `npm install && npm run build`
+- **Build output directory:** `apps/web/dist`
+- **Root directory:** *(leave blank — repo root)*
+
+Pages serves a single-page-application fallback by default for unknown
+routes — no extra `_redirects` or `_routes.json` is needed for `/sign-in`,
+`/app/dashboard`, etc. to resolve to `index.html`.
+
+## 7. Deploy the Worker
 
 ```bash
 cd apps/worker
 npx wrangler deploy
 ```
 
-This uploads the Worker bundle and the static assets from
-`apps/web/dist/`. The Worker URL (e.g.
-`https://university-hub-v2.<your-account>.workers.dev`) now serves both
-`/api/*` and the SPA fallback.
+This uploads the Worker bundle. The Worker URL (e.g.
+`https://university-hub-v2.<your-account>.workers.dev`) now serves only
+`/api/*`. The root URL returns a small JSON 404 — that's expected; the SPA
+lives on the Pages project.
 
-Update `APP_BASE_URL` to that origin if you didn't already, then redeploy
-or re-set the secret — invitation URLs in Mailgun templates use it.
+If you change the Pages project name or add a custom domain, re-set
+`ALLOWED_WEB_ORIGINS` and `APP_BASE_URL` (no Worker redeploy needed for
+either — `wrangler secret put` and `[vars]` updates take effect on the
+next request).
 
-### Path B — Pages for the SPA, Worker for the API
-
-If you'd rather have separate Pages + Worker projects:
-
-1. **Worker** — the same `wrangler deploy` from `apps/worker/` ships only
-   the API. Optional: drop the `[assets]` block from `wrangler.toml` so the
-   Worker doesn't try to serve a non-existent SPA, and route `/api/*` to
-   it via Cloudflare Routes or a custom domain.
-2. **Pages** — connect the GitHub repo to Cloudflare Pages with:
-   - **Build command:** `npm install && npm run build`
-   - **Build output directory:** `apps/web/dist`
-   - **Root directory:** *(leave blank — repo root)*
-   - **Environment variables:** `VITE_API_BASE_URL=<your-worker-origin>`,
-     `VITE_APP_NAME=University Hub`.
-3. Verify both endpoints serve and the SPA can reach `/api/*` (CORS is not
-   needed when the Worker is on the same origin via a route).
-
-## 7. Bootstrap the first super_admin
+## 8. Bootstrap the first super_admin
 
 There is no public registration. To get the first admin in:
 
@@ -193,29 +295,58 @@ and [docs/auth.md](auth.md#security-checklist-epic-23-38).
 If you'd rather avoid the endpoint entirely, the manual `wrangler d1
 execute` path is documented in the same README section.
 
-## 8. Quality gate (epic §38)
+## 9. Quality gate (epic §38)
 
-Walk this end-to-end on the deployed environment before declaring the
-release done. Run `curl` from any machine; click-throughs need a browser.
+Walk this end-to-end on the deployed pair before declaring the release
+done. Run `curl` from any machine; click-throughs need a browser.
 
 - [ ] **Build clean:** `npm run build` from the repo root finishes with no
       errors. (Already validated by CI / locally before deploy.)
 - [ ] **TypeScript clean:** `npm run typecheck` passes.
-- [ ] **Tests:** `npm test` passes (158+ vitest cases including bootstrap).
+- [ ] **Tests:** `npm test` passes (180+ vitest cases including bootstrap,
+      CORS, and cookie helpers).
 - [ ] **Migrations valid:** `npm run db:migrate` reports no pending
       migrations after a re-run.
-- [ ] **Public pages render:** visit `/`, `/features`, `/about`,
-      `/contact`, `/sign-in`, `/accept-invitation?token=does-not-exist`.
-      Each renders the public layout with consistent Tailwind / shadcn
-      styling.
-- [ ] **Protected pages auth-gated:** hit any `/app/...` URL while signed
-      out — the SPA redirects to `/sign-in`. Hit any `/api/...` protected
-      route directly with `curl` while logged out — get a `401`.
+- [ ] **Worker is API-only:** `curl -i https://<worker-host>/` returns a
+      `404 not_found` JSON — NOT SPA HTML. Same for
+      `https://<worker-host>/sign-in`. Anything outside `/api/*` is a 404.
+- [ ] **Pages serves the SPA:** visit `https://<pages-host>/`, `/features`,
+      `/about`, `/contact`, `/sign-in`,
+      `/accept-invitation?token=does-not-exist`, `/app/dashboard`. Each
+      renders the SPA HTML (Pages auto-fallback for unknown routes is what
+      makes nested routes work).
+- [ ] **CORS preflight from the Pages origin succeeds:**
+      ```bash
+      curl -i -X OPTIONS https://<worker-host>/api/auth/sign-in \
+        -H "Origin: https://<pages-host>" \
+        -H "Access-Control-Request-Method: POST"
+      ```
+      Returns 204 with `Access-Control-Allow-Origin: https://<pages-host>`,
+      `Access-Control-Allow-Credentials: true`,
+      `Access-Control-Allow-Methods: GET, POST, PATCH, DELETE, OPTIONS`.
+- [ ] **CORS preflight from a foreign origin is blocked:**
+      ```bash
+      curl -i -X OPTIONS https://<worker-host>/api/auth/sign-in \
+        -H "Origin: https://evil.example.com" \
+        -H "Access-Control-Request-Method: POST"
+      ```
+      Returns 204 with **no** `Access-Control-Allow-Origin` header.
+- [ ] **Sign-in works end-to-end:** open `https://<pages-host>/sign-in`,
+      submit credentials, land on `/app/dashboard`. In devtools,
+      `POST /api/auth/sign-in` returns a `Set-Cookie:
+      university_hub_session=...; HttpOnly; Secure; SameSite=None`. The
+      next `GET /api/auth/me` includes the cookie and returns the
+      SessionUser.
+- [ ] **Protected pages auth-gated:** hit any `/app/...` URL on Pages
+      while signed out — the SPA redirects to `/sign-in`. Hit any
+      `/api/...` protected route directly with `curl` while logged out —
+      get a `401`.
 - [ ] **Invitation-only onboarding works:** sign in as the bootstrapped
       super_admin → `/app/invitations` → create an invitation → confirm
       it appears in `/app/email-logs` with the right status. If Mailgun is
       configured, open the invitation link in a private window and accept
-      it; you should land signed in on `/app`.
+      it; you should land signed in on `/app`. (The link in the email
+      uses `APP_BASE_URL`, which should point at the Pages origin.)
 - [ ] **Mailgun routes through templates:** the email body matches the
       Mailgun template you authored, with all `{{ variable }}`
       placeholders filled in. Confirm via the Mailgun dashboard's
@@ -259,8 +390,16 @@ For subsequent ships:
 ```bash
 git pull
 npm install
-npm run build
-cd apps/worker && npx wrangler deploy
+
+# Web — set VITE_API_BASE_URL once via the Pages dashboard, or pass it on
+# every build below.
+VITE_API_BASE_URL=https://university-hub-v2.<your-account>.workers.dev \
+  npm run build
+npx wrangler pages deploy apps/web/dist --project-name=university-hub-v2-web
+
+# Worker
+cd apps/worker && npx wrangler deploy && cd -
+
 # new migrations only
 npm run db:migrate
 ```
@@ -270,7 +409,7 @@ Wrangler tracks applied migrations server-side, so re-running
 
 ## Rollback
 
-Cloudflare Workers retains versioned deploys. To roll back:
+Cloudflare Workers retains versioned deploys:
 
 ```bash
 cd apps/worker
@@ -278,21 +417,47 @@ npx wrangler deployments list
 npx wrangler rollback <deployment-id>
 ```
 
+Cloudflare Pages retains every deploy as well, accessible via the
+dashboard (**Pages → Deployments → ⋯ → Rollback to this deployment**) or
+via the API. Pages and Worker rollbacks are independent — you can roll
+back one without the other if a regression is isolated.
+
 D1 migrations are forward-only by design (this repo does not ship `down`
 migrations). If a migration corrupts data, restore from a Cloudflare D1
 backup or write a compensating migration.
 
-## Custom domain
+## Custom domains (future step)
 
-Cloudflare Workers and Pages both accept custom hostnames via the
-dashboard. After binding `hub.example.com` to the Worker:
+This deploy uses default `*.pages.dev` and `*.workers.dev` hostnames so
+the first ship is unblocked. To upgrade to vanity hostnames (e.g.
+`app.retrocow.io` for the SPA, `api.retrocow.io` for the Worker):
 
-1. Re-set `APP_BASE_URL` to the new origin so invitation URLs use it:
+1. **Pages custom domain.** **Pages → Custom domains → Set up a custom
+   domain → `app.retrocow.io`**. Cloudflare provisions the cert; once
+   verified, requests to `app.retrocow.io` route to the Pages project.
+2. **Worker custom domain.** **Workers → `university-hub-v2` → Triggers
+   → Custom Domains → Add Custom Domain → `api.retrocow.io`**. Cloudflare
+   provisions the cert and binds the hostname to the Worker.
+3. Re-set `APP_BASE_URL` to the SPA's new origin so invitation URLs use
+   it:
    ```bash
-   echo "https://hub.example.com" | npx wrangler secret put APP_BASE_URL
+   echo "https://app.retrocow.io" \
+     | npx wrangler secret put APP_BASE_URL
    ```
-2. If using Path B (Pages), re-set the Pages project's
-   `VITE_API_BASE_URL` env var and redeploy.
+4. Re-set `ALLOWED_WEB_ORIGINS` so the Worker accepts the new SPA origin
+   (and any preview deploys you still want):
+   ```bash
+   echo "https://app.retrocow.io,https://*.university-hub-v2-web.pages.dev" \
+     | npx wrangler secret put ALLOWED_WEB_ORIGINS
+   ```
+5. Update `VITE_API_BASE_URL` on the Pages project to
+   `https://api.retrocow.io` and trigger a fresh Pages deploy so the SPA
+   bundles the new API URL.
+6. *(Optional — only if you want sibling-subdomain cookie sharing.)*
+   Update the cookie helper in `apps/worker/src/utils/cookies.ts` to set
+   `Domain=retrocow.io`. Without this the cookie stays host-only on
+   `api.retrocow.io`, which is fine for the Pages SPA but means tools
+   like Cypress / Playwright pointing at the apex domain won't see it.
 
 ## Deletion / decommissioning
 
@@ -302,5 +467,12 @@ npx wrangler delete
 npx wrangler d1 delete university-hub-v2
 ```
 
-This is destructive — D1 deletion drops all data. There is no undo from the
-CLI; restore from a backup if you need to recover.
+Then the Pages project:
+
+```bash
+cd apps/web
+npx wrangler pages project delete university-hub-v2-web
+```
+
+This is destructive — D1 deletion drops all data. There is no undo from
+the CLI; restore from a backup if you need to recover.

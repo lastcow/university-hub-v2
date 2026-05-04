@@ -80,6 +80,7 @@ import {
   handleUpdateUserRole,
   handleUpdateUserStatus,
 } from "./routes/users.js";
+import { buildPreflightResponse, withCors } from "./utils/cors.js";
 import { errorResponse, jsonOk } from "./utils/responses.js";
 
 export type { Env } from "./env.js";
@@ -103,11 +104,41 @@ export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
 
+    // The Worker is API-only — the SPA ships from a separate Cloudflare
+    // Pages project. Anything outside `/api/*` returns a small JSON 404
+    // rather than a redirect or proxy; the browser only ever lands here
+    // via a direct API call or an accidental visit to the Worker host.
     if (!url.pathname.startsWith("/api/")) {
-      return env.ASSETS.fetch(request);
+      return withCors(
+        errorResponse(
+          404,
+          "not_found",
+          "This is the University Hub API. The web app lives on the Pages project — see docs/deployment.md.",
+        ),
+        env,
+        request,
+      );
+    }
+
+    // CORS preflight runs before context/auth work — it never carries cookies
+    // and only needs to inspect headers.
+    if (request.method === "OPTIONS") {
+      return buildPreflightResponse(env, request);
     }
 
     const ctx = await buildContext(request, env);
+
+    const response = await routeApi(ctx, request, env, url);
+    return withCors(response, env, request);
+  },
+} satisfies ExportedHandler<Env>;
+
+async function routeApi(
+  ctx: Awaited<ReturnType<typeof buildContext>>,
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<Response> {
 
     if (url.pathname === "/api/health" && request.method === "GET") {
       const body: HealthResponse = {
@@ -389,5 +420,4 @@ export default {
     }
 
     return errorResponse(404, "not_found", "The requested resource was not found.");
-  },
-} satisfies ExportedHandler<Env>;
+}

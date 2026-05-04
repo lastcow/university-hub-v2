@@ -4,11 +4,16 @@
 
 export interface Env {
   DB: D1Database;
-  ASSETS: Fetcher;
 
   APP_ENV?: string;
   APP_NAME?: string;
   APP_BASE_URL?: string;
+
+  // Comma-separated list of origins allowed to call /api/* with credentials
+  // (the Cloudflare Pages SPA + any local dev origins). Drives the CORS
+  // middleware in utils/cors.ts. Wildcards: a leading "*." matches any
+  // subdomain ("*.university-hub-v2-web.pages.dev" → preview deploys).
+  ALLOWED_WEB_ORIGINS?: string;
 
   SESSION_COOKIE_NAME?: string;
   SESSION_SECRET?: string;

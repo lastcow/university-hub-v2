@@ -1,5 +1,12 @@
-// Minimal cookie helpers for the Worker. Cookies are HttpOnly, SameSite=Lax,
-// and Secure when running outside dev (`APP_ENV !== "development"`).
+// Minimal cookie helpers for the Worker. The session cookie is set on the
+// Worker's host (e.g. *.workers.dev) and read by the SPA, which lives on a
+// different host (e.g. *.pages.dev) — that is cross-site, so the cookie has
+// to use `SameSite=None; Secure` in production. In dev (`APP_ENV ===
+// "development"`) we drop Secure and use `SameSite=Lax` so http://localhost
+// sign-in still works without HTTPS.
+
+import type { Env } from "../env.js";
+import { isProduction } from "../env.js";
 
 export function parseCookies(header: string | null): Record<string, string> {
   if (!header) return {};
@@ -41,15 +48,47 @@ export function buildSetCookie(options: SetCookieOptions): string {
   return parts.join("; ");
 }
 
-export function buildClearCookie(name: string, opts: { secure?: boolean } = {}): string {
+/**
+ * Picks the right cookie attributes for the deployment we're running in:
+ * cross-site (`SameSite=None; Secure`) in production so the Pages SPA can
+ * send the cookie on `fetch(...)`, and `SameSite=Lax` without `Secure` in
+ * dev so a plain http://localhost sign-in flow works.
+ */
+export function sessionCookieAttributes(env: Env): {
+  sameSite: "None" | "Lax";
+  secure: boolean;
+} {
+  if (isProduction(env)) {
+    return { sameSite: "None", secure: true };
+  }
+  return { sameSite: "Lax", secure: false };
+}
+
+export function buildSessionSetCookie(
+  env: Env,
+  options: { name: string; value: string; expires: Date },
+): string {
+  const { sameSite, secure } = sessionCookieAttributes(env);
+  return buildSetCookie({
+    name: options.name,
+    value: options.value,
+    expires: options.expires,
+    httpOnly: true,
+    secure,
+    sameSite,
+  });
+}
+
+export function buildSessionClearCookie(env: Env, name: string): string {
+  const { sameSite, secure } = sessionCookieAttributes(env);
   return buildSetCookie({
     name,
     value: "",
     path: "/",
     expires: new Date(0),
     maxAgeSeconds: 0,
-    secure: opts.secure ?? false,
     httpOnly: true,
-    sameSite: "Lax",
+    secure,
+    sameSite,
   });
 }

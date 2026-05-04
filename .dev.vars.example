@@ -2,6 +2,12 @@ APP_ENV=development
 APP_NAME=University Hub
 APP_BASE_URL=http://localhost:5173
 
+# Comma-separated origins allowed to call /api/* with credentials. In dev,
+# http://localhost:5173 is included automatically; this var is mainly here
+# for parity with production. In production, set it to the Pages origin
+# (and optionally `https://*.<project>.pages.dev` for previews).
+# ALLOWED_WEB_ORIGINS=https://university-hub-v2-web.pages.dev
+
 SESSION_COOKIE_NAME=university_hub_session
 SESSION_SECRET=replace-with-local-secret
 
