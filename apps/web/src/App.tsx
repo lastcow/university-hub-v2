@@ -4,8 +4,10 @@ import { AppShell } from "@/app/AppShell";
 import { AuthProvider } from "@/auth/AuthContext";
 import { ProtectedRoute } from "@/auth/ProtectedRoute";
 import { Toaster } from "@/components/ui/toaster";
+import { AcceptInvitationPage } from "@/pages/AcceptInvitationPage";
 import { AccessDeniedPage } from "@/pages/AccessDeniedPage";
 import { DashboardPage } from "@/pages/DashboardPage";
+import { InvitationsPage } from "@/pages/InvitationsPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { SignInPage } from "@/pages/SignInPage";
 import { UxStatesPage } from "@/pages/UxStatesPage";
@@ -21,6 +23,7 @@ export default function App() {
       <AuthProvider>
         <Routes>
           <Route path="/sign-in" element={<SignInPage />} />
+          <Route path="/accept-invitation" element={<AcceptInvitationPage />} />
           <Route
             path="/app"
             element={
@@ -31,6 +34,7 @@ export default function App() {
           >
             <Route index element={<Navigate to="dashboard" replace />} />
             <Route path="dashboard" element={<DashboardPage />} />
+            <Route path="invitations" element={<InvitationsPage />} />
             <Route path="ux" element={<UxStatesPage />} />
             <Route path="access-denied" element={<AccessDeniedPage />} />
             <Route path="*" element={<NotFoundPage />} />
