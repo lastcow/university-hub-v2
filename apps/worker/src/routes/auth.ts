@@ -31,6 +31,14 @@ import {
 } from "../auth/session.js";
 import { execute, queryFirst } from "../db/index.js";
 import type { RequestContext } from "../middleware/auth.js";
+import {
+  byEmail,
+  byIpEmail,
+  clientIpFromCtx,
+  passwordResetLimit,
+  rateLimitedResponse,
+  signInLimit,
+} from "../middleware/rate-limit.js";
 import { issueMfaChallenge, type MfaUserRow } from "./mfa.js";
 import { writeAuditLog } from "../services/audit.js";
 import {
@@ -63,6 +71,40 @@ export async function handleSignIn(ctx: RequestContext): Promise<Response> {
     });
   }
   const { email, password } = parsed.data;
+
+  // Rate limit BEFORE we do any password work. Counts every attempt regardless
+  // of outcome, keyed by (IP, email) so distributed credential-stuffing across
+  // the same email is throttled even if it rotates IPs slowly. After the limit
+  // trips, even a correct password is denied until the window resets — the
+  // attacker has already had 5 swings and we'd rather be wrong about a real
+  // user re-trying for 15 minutes than wrong about an attacker.
+  const ip = clientIpFromCtx(ctx);
+  const limitOutcome = await byIpEmail(
+    ctx.env,
+    "auth.sign_in",
+    ip,
+    email,
+    signInLimit(ctx.env),
+  );
+  if (!limitOutcome.allowed) {
+    await writeAuditLog(ctx.env.DB, {
+      action: "auth.rate_limited",
+      actorUserId: null,
+      universityId: null,
+      entityType: "auth",
+      entityId: null,
+      metadata: {
+        endpoint: "/api/auth/sign-in",
+        ip,
+        email,
+        retry_after_seconds: limitOutcome.retryAfterSeconds,
+      },
+    });
+    return rateLimitedResponse(
+      limitOutcome,
+      "Too many sign-in attempts. Try again in a few minutes.",
+    );
+  }
 
   if (password.length < MIN_PASSWORD_LENGTH) {
     return errorResponse(401, "invalid_credentials", INVALID_CREDENTIALS);
@@ -178,5 +220,54 @@ export function handleMe(ctx: RequestContext): Response {
   }
   const sessionUser: SessionUser = toSessionUser(ctx.auth.user);
   return jsonOk(sessionUser);
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/password-reset/request   { email }
+//
+// Public endpoint. Rate-limited to 3 requests per email per hour (UNI-25).
+// Token issuance + the actual reset form are tracked separately — this
+// surface exists today so credential-stuffing reconnaissance ("does an
+// account exist for foo@bar?") and password-reset email floods are capped
+// in advance of the full feature.
+//
+// Always responds 202 with a generic message regardless of whether the
+// email matches a real user; that way the response timing / status doesn't
+// reveal account existence. The 429 path is the only observable signal,
+// and it triggers per email — i.e. an attacker can't probe many emails by
+// noticing that one of them gets rate-limited.
+// ---------------------------------------------------------------------------
+export async function handlePasswordResetRequest(
+  ctx: RequestContext,
+): Promise<Response> {
+  const raw = (await readJson(ctx.request)) as { email?: unknown } | null;
+  const email =
+    raw && typeof raw === "object" && typeof raw.email === "string"
+      ? raw.email.trim().toLowerCase()
+      : "";
+
+  if (!email || !email.includes("@") || email.length > 254) {
+    return errorResponse(400, "invalid_request", "A valid email is required.");
+  }
+
+  const outcome = await byEmail(
+    ctx.env,
+    "auth.password_reset",
+    email,
+    passwordResetLimit(ctx.env),
+  );
+  if (!outcome.allowed) {
+    return rateLimitedResponse(
+      outcome,
+      "Too many password-reset requests for that address. Try again later.",
+    );
+  }
+
+  // Token issuance + email send is intentionally out of scope here. When
+  // that ships, plug it in at this point — the limiter is already in place.
+  return jsonOk(
+    { ok: true, message: "If an account exists, a reset email is on the way." },
+    { status: 202 },
+  );
 }
 

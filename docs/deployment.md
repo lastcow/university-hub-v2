@@ -459,6 +459,37 @@ the first ship is unblocked. To upgrade to vanity hostnames (e.g.
    `api.retrocow.io`, which is fine for the Pages SPA but means tools
    like Cypress / Playwright pointing at the apex domain won't see it.
 
+## Recommended add-on: Cloudflare-edge rate-limit rules (UNI-25)
+
+The Worker enforces application-aware rate limits (per-email sign-in
+caps, per-session MFA caps, generic per-IP limits — see
+`apps/worker/src/middleware/rate-limit.ts`). For network-layer abuse —
+sustained scrapers, dumb DDoS, single IPs hammering a path before the
+Worker even reads the body — layer Cloudflare's edge **Rate Limiting
+Rules** in front. They run before the Worker billing meter, so they're
+free protection against bulk-volume attacks the Worker would otherwise
+spend CPU on.
+
+Suggested starter rules (configure under **Security → WAF → Rate
+limiting rules** in the Cloudflare dashboard, OR check them into
+`wrangler.toml` once Cloudflare exposes them in TOML — today the
+dashboard is the only path):
+
+| Rule                                            | Match                                                      | Threshold              | Action      |
+|-------------------------------------------------|------------------------------------------------------------|------------------------|-------------|
+| Block runaway scrapers                          | `(http.request.uri.path matches "^/api/")`                 | 600 req / IP / minute  | Block 10 min|
+| Cap raw sign-in volume                          | `(http.request.uri.path eq "/api/auth/sign-in")`           | 60 req / IP / minute   | Challenge   |
+| Cap raw password-reset volume                   | `(http.request.uri.path eq "/api/auth/password-reset/request")` | 30 req / IP / minute | Challenge   |
+
+These thresholds are deliberately looser than the Worker's per-email
+limits — the edge layer is for crude volume protection; the Worker is
+where per-email / per-session intelligence lives. The two layers
+compose: edge stops obvious floods, Worker stops targeted credential
+stuffing.
+
+Field-level DDoS (network layer 3/4) is already handled by Cloudflare's
+free tier on every domain; nothing to configure.
+
 ## Deletion / decommissioning
 
 ```bash

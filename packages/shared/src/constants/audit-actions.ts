@@ -3,6 +3,7 @@ import type { AuditAction } from "../types/audit-log.js";
 export const AUDIT_ACTIONS = [
   "auth.sign_in",
   "auth.sign_out",
+  "auth.rate_limited",
   "invitation.created",
   "invitation.accepted",
   "invitation.revoked",
@@ -34,6 +35,7 @@ export const AUDIT_ACTIONS = [
 export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "auth.sign_in": "Sign in",
   "auth.sign_out": "Sign out",
+  "auth.rate_limited": "Sign-in rate limited",
   "invitation.created": "Invitation created",
   "invitation.accepted": "Invitation accepted",
   "invitation.revoked": "Invitation revoked",

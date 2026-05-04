@@ -5,13 +5,6 @@ import { ROLE_GROUPS, type RoleGroup } from "./roles.js";
 export const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * Per-invitation resend rate limit. Counts only `invitation_resend` email
- * attempts (not the original send) inside the trailing window.
- */
-export const INVITATION_RESEND_MAX_PER_WINDOW = 5;
-export const INVITATION_RESEND_WINDOW_MS = 60 * 60 * 1000;
-
-/**
  * Roles a given actor may invite (epic UNI-1 §11, §27). Backend authoritative;
  * the frontend uses the same helper to grey out roles the actor can't invite.
  *

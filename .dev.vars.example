@@ -27,3 +27,20 @@ SUPPORT_EMAIL=support@example.com
 # run `npm run bootstrap:admin -- --url=... --email=...`, and then delete the
 # secret with `wrangler secret delete BOOTSTRAP_SECRET`. See docs/auth.md.
 # BOOTSTRAP_SECRET=replace-with-bootstrap-secret
+
+# Rate-limit overrides (UNI-25). Defaults are documented in
+# apps/worker/src/middleware/rate-limit.ts. Override only when an operator
+# wants different ceilings for the deployed instance. All values are positive
+# integers; non-numeric or zero values fall back to the default.
+# RATE_LIMIT_SIGN_IN_MAX=5
+# RATE_LIMIT_SIGN_IN_WINDOW_SECONDS=900
+# RATE_LIMIT_PASSWORD_RESET_MAX=3
+# RATE_LIMIT_PASSWORD_RESET_WINDOW_SECONDS=3600
+# RATE_LIMIT_MFA_CHALLENGE_MAX=5
+# RATE_LIMIT_MFA_CHALLENGE_WINDOW_SECONDS=300
+# RATE_LIMIT_INVITATION_RESEND_MAX=3
+# RATE_LIMIT_INVITATION_RESEND_WINDOW_SECONDS=3600
+# RATE_LIMIT_API_AUTH_MAX=120
+# RATE_LIMIT_API_AUTH_WINDOW_SECONDS=60
+# RATE_LIMIT_API_ANON_MAX=30
+# RATE_LIMIT_API_ANON_WINDOW_SECONDS=60

@@ -65,6 +65,11 @@ import {
 import { execute, queryFirst } from "../db/index.js";
 import type { Env } from "../env.js";
 import type { RequestContext } from "../middleware/auth.js";
+import {
+  bySession,
+  mfaChallengeLimit,
+  rateLimitedResponse,
+} from "../middleware/rate-limit.js";
 import { writeAuditLog } from "../services/audit.js";
 import {
   buildMfaChallengeClearCookie,
@@ -344,6 +349,24 @@ export async function handleMfaChallenge(
   const resolved = await resolveChallengeContext(ctx);
   if (resolved instanceof Response) return resolved;
   const { user, token } = resolved;
+
+  // Rate limit per challenge cookie. The challenge token is single-session
+  // by construction (one outstanding row per user — see issueMfaChallenge),
+  // so this caps brute-forcing of the 6-digit TOTP space inside one sign-in
+  // attempt. After the limit trips the user must sign in again, which
+  // issues a fresh challenge and resets the counter.
+  const limitOutcome = await bySession(
+    ctx.env,
+    "auth.mfa_challenge",
+    token,
+    mfaChallengeLimit(ctx.env),
+  );
+  if (!limitOutcome.allowed) {
+    return rateLimitedResponse(
+      limitOutcome,
+      "Too many verification attempts. Sign in again to continue.",
+    );
+  }
 
   const raw = await readJson(ctx.request);
   const parsed = mfaChallengeInputSchema.safeParse(raw);
