@@ -15,8 +15,8 @@ before launch.
 | External notification floor | Customer within 24h (S0/S1). Affected students per FERPA + state law. |
 | Drill cadence | Annually, after any S0/S1 incident, or after any major architecture change |
 | Post-mortem deadline | Within 7 calendar days of S0 or S1 declaration |
-| Owner | *(fill in: SaaS operator on-call lead)* |
-| Customer escalation | *(fill in: customer CEO / DPO / IT / FERPA officer + after-hours phone)* |
+| Owner | Jordan Reyes — SaaS operator on-call lead, jordan.reyes@universityhub.example.com, +1-555-0142 *(mockup — replace per deploy)* |
+| Customer escalation | Dr. Sam Patel — Stanton State University DPO / FERPA officer, dpo@stanton.example.edu, +1-555-0188 (after-hours) *(mockup — replace per deploy)* |
 
 If this is your first time opening the runbook in anger: jump to
 [**S0/S1 containment**](#s0s1-containment-confirmed-or-likely-compromise).
@@ -573,18 +573,23 @@ match the code.
 
 ## Owners and escalation contacts
 
-> **Customers fill this section in before launch.** Leaving the placeholders
-> in production is itself a runbook gap — promote it to S2 if you find
-> them blank during a real incident.
+> **Customers replace these mockup defaults before launch.** The rows below
+> are illustrative placeholders — Stanton State University and the example
+> phone numbers (+1-555-01xx range) are not real. Every operator and
+> customer row must be overwritten with real names, working emails, and
+> after-hours phone numbers reachable outside business hours, per deploy,
+> before opening to real students. Leaving the mockup values in production
+> is itself a runbook gap — promote it to S2 if you find them during a
+> real incident.
 
 | Role | Name | Email | Phone (after-hours) | Notes |
 |------|------|-------|--------------------|-------|
-| SaaS operator on-call lead | *(fill in)* | | | First responder. Reachable 24/7 during launch + first 90 days. |
-| SaaS operator escalation (CTO / founder) | *(fill in)* | | | Backup; pulled in for S0 only. |
-| Customer CEO / president | *(fill in)* | | | Notified for S0 within 24h. |
-| Customer DPO / FERPA compliance officer | *(fill in)* | | | Owns student-facing FERPA notifications, DOE / state filings. |
-| Customer IT / security lead | *(fill in)* | | | Day-of-incident technical counterpart. |
-| Customer general counsel | *(fill in)* | | | Litigation-hold and disclosure decisions. |
+| SaaS operator on-call lead | Jordan Reyes | jordan.reyes@universityhub.example.com | +1-555-0142 | First responder. Reachable 24/7 during launch + first 90 days. |
+| SaaS operator escalation (CTO / founder) | Morgan Lee | morgan.lee@universityhub.example.com | +1-555-0156 | Backup; pulled in for S0 only. |
+| Customer CEO / president | Dr. Eleanor Whitaker | president@stanton.example.edu | +1-555-0173 | Notified for S0 within 24h. |
+| Customer DPO / FERPA compliance officer | Dr. Sam Patel | dpo@stanton.example.edu | +1-555-0188 | Owns student-facing FERPA notifications, DOE / state filings. |
+| Customer IT / security lead | Alex Nakamura | ciso@stanton.example.edu | +1-555-0191 | Day-of-incident technical counterpart. |
+| Customer general counsel | Marisol Greene | counsel@stanton.example.edu | +1-555-0205 | Litigation-hold and disclosure decisions. |
 | Cloudflare support | enterprise@cloudflare.com / dashboard ticket | | | Use only if Cloudflare-account-level intervention is required. |
 | Mailgun support | help@mailgun.com / dashboard ticket | | | Use only if Mailgun-side abuse is observed. |
 
@@ -726,10 +731,13 @@ paged the operator's email.
   the top-level `.gitignore` does not exclude it; an inattentive `git
   add` after an incident could check forensic dumps into the repo. Add
   `incidents/` to `.gitignore`.
-- **Customer escalation contacts are placeholders.** The operator
-  cannot place a real call from this runbook today. Block launch on
-  filling in the [Owners and escalation contacts](#owners-and-escalation-contacts)
-  table.
+- **Customer escalation contacts are mockup defaults.** The
+  [Owners and escalation contacts](#owners-and-escalation-contacts)
+  table now ships with illustrative mockup rows (Stanton State
+  University, +1-555-01xx phone range) so the shape of the data is
+  obvious, but those values are not callable. Block launch per deploy
+  on overwriting every row with real names, emails, and reachable
+  after-hours phone numbers for the deploying customer.
 - **Mailgun-side reset is dashboard-only.** The runbook should call out
   that the Mailgun reset is point-and-click (no API equivalent), so an
   operator reading this at 3 a.m. doesn't waste time hunting for a CLI.
