@@ -14,6 +14,7 @@
     "build": "npm --workspace @university-hub/web run build",
     "typecheck": "tsc -b --pretty",
     "typecheck:clean": "tsc -b --clean",
+    "test": "npm --workspace @university-hub/worker run test",
     "db:migrate:local": "npm --workspace @university-hub/worker run db:migrate:local",
     "db:migrate": "npm --workspace @university-hub/worker run db:migrate",
     "db:exec:local": "npm --workspace @university-hub/worker run db:exec:local",

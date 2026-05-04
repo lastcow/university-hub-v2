@@ -1,11 +1,16 @@
 // Public POST /api/contact — accepts a contact-form submission, validates it
-// with the shared zod schema, and persists it to the `contact_messages` table.
-// No email is sent here; that is handled in UNI-9 once the Mailgun service
-// lands. We only return a generic success and never echo internal errors.
+// with the shared zod schema, persists it to `contact_messages`, then asks
+// Mailgun to send a notification email to the support inbox.
+//
+// Email failure does NOT fail the request: the row is already saved, the user
+// gets a success response, and `email_logs` records the failure (UNI-9 §16).
+// In dev with placeholder Mailgun secrets, that row will read
+// `failed / mailgun_not_configured`.
 
 import { contactMessageInputSchema } from "@university-hub/shared";
 
 import { execute } from "../db/index.js";
+import { sendContactNotificationEmail } from "../mail/index.js";
 import type { RequestContext } from "../middleware/auth.js";
 import { errorResponse, jsonOk } from "../utils/responses.js";
 
@@ -46,6 +51,23 @@ export async function handleCreateContactMessage(
       "We couldn't record your message. Please try again in a moment.",
     );
   }
+
+  // Notify the support inbox. The send writes its own `email_logs` row and
+  // returns a `SendResult` we don't propagate to the user — a delivery
+  // failure must never turn into a 5xx for the public form.
+  const supportRecipient =
+    (ctx.env.SUPPORT_EMAIL ?? "").trim() ||
+    (ctx.env.MAILGUN_FROM_EMAIL ?? "").trim() ||
+    "support@example.com";
+  await sendContactNotificationEmail(ctx.env, {
+    to: supportRecipient,
+    contactMessageId: id,
+    variables: {
+      contact_name: name,
+      contact_email: email,
+      contact_message: message,
+    },
+  });
 
   return jsonOk({ id });
 }
