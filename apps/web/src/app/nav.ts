@@ -201,6 +201,12 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         roles: ["student"],
       },
       {
+        label: "My grades",
+        to: "/app/student/my-grades",
+        icon: ClipboardList,
+        roles: ["student"],
+      },
+      {
         label: "My profile",
         to: "/app/student/my-profile",
         icon: UserSquare2,
@@ -214,6 +220,12 @@ export const NAV_SECTIONS: readonly NavSection[] = [
       {
         label: "Audit logs",
         to: "/app/audit-logs",
+        icon: ClipboardList,
+        roles: ADMIN_ONLY,
+      },
+      {
+        label: "Grade access log",
+        to: "/app/audit-logs/grade-access",
         icon: ClipboardList,
         roles: ADMIN_ONLY,
       },

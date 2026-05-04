@@ -467,6 +467,23 @@ export class IsolationStore {
   readonly teacherAssistants = new Map<string, ProfileRow>();
   readonly students = new Map<string, ProfileRow>();
   readonly invitations = new Map<string, InvitationRow>();
+  /** Assessments seeded or inserted during a run (UNI-30). */
+  readonly assessments = new Map<
+    string,
+    {
+      id: string;
+      course_id: string;
+      title: string;
+      description: string | null;
+      weight: number;
+      max_score: number;
+      due_at: string | null;
+      created_by: string | null;
+      deleted_at: string | null;
+      created_at: string;
+      updated_at: string;
+    }
+  >();
   /** Inserted email_logs rows — `recent resends in window` reads this list. */
   readonly emailLogs: Array<{
     id: string;
@@ -848,6 +865,66 @@ function wireResolvers(db: ProgrammableD1, store: IsolationStore): void {
       }
     }
 
+    // UNI-30 — admin / staff path on assessments + grades endpoints loads
+    // the course by university to confirm the actor shares the course's uni.
+    if (
+      s.startsWith("select university_id from courses where id = ?")
+    ) {
+      const c = store.courses.get(String(params[0]));
+      return c ? { university_id: c.university_id } : null;
+    }
+    // UNI-30 — student-grades endpoint reads the target student's
+    // role/university to gate cross-uni and non-student lookups.
+    if (
+      s.startsWith("select id, role, university_id from users where id = ?")
+    ) {
+      const u = store.users.get(String(params[0]));
+      return u
+        ? { id: u.id, role: u.role, university_id: u.university_id }
+        : null;
+    }
+
+    // assessments (UNI-30) -------------------------------------------------
+    if (s.startsWith("select a.id, a.course_id, a.deleted_at,")) {
+      const a = store.assessments.get(String(params[0]));
+      if (!a) return null;
+      const c = store.courses.get(a.course_id);
+      return {
+        id: a.id,
+        course_id: a.course_id,
+        deleted_at: a.deleted_at,
+        course_university_id: c?.university_id ?? null,
+      };
+    }
+    if (
+      s.startsWith("select a.id, a.course_id, a.title, a.description,") &&
+      s.includes("where a.id = ?")
+    ) {
+      const a = store.assessments.get(String(params[0]));
+      if (!a) return null;
+      const c = store.courses.get(a.course_id);
+      return {
+        ...a,
+        course_name: c ? "Course" : null,
+        course_code: c?.code ?? null,
+        course_university_id: c?.university_id ?? null,
+      };
+    }
+
+    // grades (UNI-30) ------------------------------------------------------
+    if (
+      s.startsWith("select g.id, g.assessment_id, g.student_user_id,") &&
+      s.includes("where g.id = ?")
+    ) {
+      // No grades seeded in this fixture; fall through.
+      return null;
+    }
+
+    // grade_access_log count (UNI-30) -------------------------------------
+    if (s.startsWith("select count(1) as c from grade_access_log")) {
+      return { c: 0 };
+    }
+
     return undefined;
   });
 
@@ -1025,8 +1102,13 @@ function wireResolvers(db: ProgrammableD1, store: IsolationStore): void {
       return list.map((r) => enrichTa(r, store));
     }
 
-    // course_assignments DISTINCT course_id
-    if (s.startsWith("select distinct course_id from course_assignments")) {
+    // course_assignments DISTINCT course_id with parameterized role list.
+    // The "role IN (...)" form (course_assignments helper) is what binds
+    // here; the UNI-30 "role = 'student'" inlined form is handled below.
+    if (
+      s.startsWith("select distinct course_id from course_assignments") &&
+      s.includes("role in")
+    ) {
       const userId = String(params[0]);
       const allowed = new Set(params.slice(1).map(String));
       const ids = new Set<string>();
@@ -1048,6 +1130,75 @@ function wireResolvers(db: ProgrammableD1, store: IsolationStore): void {
     // audit_logs / email_logs — return [] since we don't emulate reads.
     if (s.startsWith("select a.id, a.university_id, a.actor_user_id")) return [];
     if (s.startsWith("select e.id, e.university_id, e.recipient_email")) return [];
+
+    // assessments / grades / grade_access_log lists (UNI-30) — empty.
+    // The matrix doesn't seed any rows; tests assert on access *gating*, not
+    // on returned content.
+    if (
+      s.startsWith("select a.id, a.course_id, a.title, a.description,") &&
+      s.includes("where a.course_id = ?")
+    ) {
+      return [];
+    }
+    if (
+      s.startsWith("select g.id, g.assessment_id, g.student_user_id,") &&
+      s.includes("from grades g")
+    ) {
+      return [];
+    }
+    if (s.startsWith("select al.id, al.viewer_user_id,")) {
+      return [];
+    }
+    // Student-grades course-tuple lookups (UNI-30).
+    if (
+      s.startsWith("select distinct course_id from course_assignments") &&
+      s.includes("role = 'student'")
+    ) {
+      const userId = String(params[0]);
+      const out = new Set<string>();
+      for (const a of store.courseAssignments.values()) {
+        if (a.user_id === userId && a.role === "student") out.add(a.course_id);
+      }
+      return Array.from(out).map((course_id) => ({ course_id }));
+    }
+    if (
+      s.startsWith("select distinct ca.course_id from course_assignments ca")
+    ) {
+      const userId = String(params[0]);
+      // params[1] is actor.role string; params[2] is actor.university_id ?? "".
+      const out = new Set<string>();
+      for (const a of store.courseAssignments.values()) {
+        if (a.user_id === userId && a.role === "student") out.add(a.course_id);
+      }
+      return Array.from(out).map((course_id) => ({ course_id }));
+    }
+    if (
+      s.startsWith(
+        "select teaching.course_id as course_id, teaching.role as role",
+      )
+    ) {
+      const studentId = String(params[0]);
+      const teacherId = String(params[1]);
+      const studentCourses = new Set<string>();
+      for (const a of store.courseAssignments.values()) {
+        if (a.user_id === studentId && a.role === "student") {
+          studentCourses.add(a.course_id);
+        }
+      }
+      const out: { course_id: string; role: string }[] = [];
+      for (const a of store.courseAssignments.values()) {
+        if (
+          a.user_id === teacherId &&
+          studentCourses.has(a.course_id) &&
+          (a.role === "faculty" ||
+            a.role === "teacher" ||
+            a.role === "teacher_assistant")
+        ) {
+          out.push({ course_id: a.course_id, role: a.role });
+        }
+      }
+      return out;
+    }
 
     return undefined;
   });
@@ -1097,6 +1248,24 @@ function wireResolvers(db: ProgrammableD1, store: IsolationStore): void {
         role: String(params[3]) as AssignmentRow["role"],
         created_at: String(params[4]),
         updated_at: String(params[5]),
+      });
+    }
+    if (s.startsWith("insert into assessments")) {
+      // INSERT INTO assessments
+      //   (id, course_id, title, description, weight, max_score, due_at,
+      //    created_by, created_at, updated_at) VALUES (?...?)
+      store.assessments.set(String(params[0]), {
+        id: String(params[0]),
+        course_id: String(params[1]),
+        title: String(params[2]),
+        description: params[3] === null ? null : String(params[3]),
+        weight: Number(params[4]),
+        max_score: Number(params[5]),
+        due_at: params[6] === null ? null : String(params[6]),
+        created_by: params[7] === null ? null : String(params[7]),
+        deleted_at: null,
+        created_at: String(params[8]),
+        updated_at: String(params[9]),
       });
     }
     if (s.startsWith("delete from course_assignments")) {

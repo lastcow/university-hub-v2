@@ -22,6 +22,11 @@ export const AUDIT_ACTIONS = [
   "course.created",
   "course.updated",
   "course.deleted",
+  "assessment.created",
+  "assessment.updated",
+  "assessment.deleted",
+  "grade.created",
+  "grade.changed",
   "email.sent",
   "email.failed",
   "settings.updated",
@@ -55,6 +60,11 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "course.created": "Course created",
   "course.updated": "Course updated",
   "course.deleted": "Course deleted",
+  "assessment.created": "Assessment created",
+  "assessment.updated": "Assessment updated",
+  "assessment.deleted": "Assessment deleted",
+  "grade.created": "Grade recorded",
+  "grade.changed": "Grade changed",
   "email.sent": "Email sent",
   "email.failed": "Email failed",
   "settings.updated": "Settings updated",
@@ -79,6 +89,8 @@ export type AuditActionCategory =
   | "university"
   | "department"
   | "course"
+  | "assessment"
+  | "grade"
   | "email"
   | "settings"
   | "mfa";

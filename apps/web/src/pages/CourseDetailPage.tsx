@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
+  ClipboardList,
   Pencil,
   Plus,
   Trash2,
@@ -124,6 +125,16 @@ export function CourseDetailPage() {
           user.university_id === state.data.university_id)
       : false;
 
+  // Faculty / teacher / TA assigned to the course can open the gradebook
+  // (the worker enforces the assignment check). Admins also pass.
+  const canOpenGradebook =
+    !!user &&
+    (user.role === "super_admin" ||
+      user.role === "university_admin" ||
+      user.role === "faculty" ||
+      user.role === "teacher" ||
+      user.role === "teacher_assistant");
+
   async function onConfirmDelete() {
     if (!id) return;
     setDeleting(true);
@@ -200,6 +211,14 @@ export function CourseDetailPage() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <CourseStatusBadge status={state.data.status} />
+                {canOpenGradebook ? (
+                  <Button asChild size="sm" variant="outline">
+                    <Link to={`/app/courses/${state.data.id}/grades`}>
+                      <ClipboardList className="h-4 w-4" />
+                      Gradebook
+                    </Link>
+                  </Button>
+                ) : null}
                 {canManage ? (
                   <>
                     <Button asChild size="sm" variant="outline">
