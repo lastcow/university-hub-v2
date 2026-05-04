@@ -39,6 +39,7 @@ import {
   handleCreateInvitation,
   handleGetInvitation,
   handleListInvitations,
+  handleResendInvitation,
   handleRevokeInvitation,
 } from "../../src/routes/invitations.js";
 import {
@@ -255,6 +256,18 @@ export const SCENARIOS: Scenario[] = [
         makeCtx(actor, db, {
           method: "POST",
           pathname: `/api/invitations/${INVITATION_A}/revoke`,
+        }),
+        INVITATION_A,
+      ),
+    successActors: ["superAdmin", "uniAAdmin"],
+  },
+  {
+    id: "POST /api/invitations/:id/resend (UNI_A)",
+    invoke: (actor, db) =>
+      handleResendInvitation(
+        makeCtx(actor, db, {
+          method: "POST",
+          pathname: `/api/invitations/${INVITATION_A}/resend`,
         }),
         INVITATION_A,
       ),
