@@ -1,0 +1,62 @@
+# Daily D1 backup → R2 (sub-issue UNI-27).
+#
+# Runs `scripts/backup-d1.mjs` on the GitHub Actions hosted runner. This is
+# the primary scheduler for production backups: a CI runner has the wrangler
+# CLI available, can call `wrangler d1 export --remote`, and can stream the
+# resulting SQL dump straight into R2. The Workers Cron Trigger declared in
+# `apps/worker/wrangler.toml` is defense-in-depth — it uses the in-Worker
+# `D1.dump()` path which is not supported on every D1 backend.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   - CLOUDFLARE_API_TOKEN   scoped to D1:Read + R2:Edit on the deploy account.
+#   - CLOUDFLARE_ACCOUNT_ID  the account that owns the D1 + R2 bucket.
+#
+# Optional repo variables (Settings → Secrets and variables → Actions →
+# Variables) — leave unset to use the script defaults documented in
+# `scripts/backup-d1.mjs`:
+#   - D1_BACKUP_BUCKET, D1_BACKUP_PREFIX
+#   - D1_BACKUP_RETAIN_DAILY, D1_BACKUP_RETAIN_WEEKLY, D1_BACKUP_RETAIN_MONTHLY
+
+name: d1-backup
+
+on:
+  schedule:
+    # 02:00 UTC daily. GitHub-hosted cron is best-effort — actual fire time
+    # can drift by several minutes, which is fine for a daily backup.
+    - cron: "0 2 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: d1-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      # `wrangler` is a devDependency of @university-hub/worker. Installing
+      # the workspace gives us the pinned version without a global install.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run backup
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          D1_BACKUP_BUCKET: ${{ vars.D1_BACKUP_BUCKET }}
+          D1_BACKUP_PREFIX: ${{ vars.D1_BACKUP_PREFIX }}
+          D1_BACKUP_RETAIN_DAILY: ${{ vars.D1_BACKUP_RETAIN_DAILY }}
+          D1_BACKUP_RETAIN_WEEKLY: ${{ vars.D1_BACKUP_RETAIN_WEEKLY }}
+          D1_BACKUP_RETAIN_MONTHLY: ${{ vars.D1_BACKUP_RETAIN_MONTHLY }}
+        run: node scripts/backup-d1.mjs

@@ -5,6 +5,13 @@
 export interface Env {
   DB: D1Database;
 
+  // R2 bucket bound by `[[r2_buckets]]` in wrangler.toml. Optional because
+  // the binding is only present in deployments that opted into the in-Worker
+  // cron-triggered backup path (UNI-27); the GitHub Actions backup workflow
+  // does not require this binding. When unset the scheduled handler logs a
+  // structured failure and exits without crashing.
+  BACKUPS?: R2Bucket;
+
   APP_ENV?: string;
   APP_NAME?: string;
   APP_BASE_URL?: string;
@@ -66,6 +73,16 @@ export interface Env {
   RATE_LIMIT_API_AUTH_WINDOW_SECONDS?: string;           // default 60
   RATE_LIMIT_API_ANON_MAX?: string;                      // default 30
   RATE_LIMIT_API_ANON_WINDOW_SECONDS?: string;           // default 60
+
+  // D1 → R2 backup overrides (UNI-27). Read by both the in-Worker cron
+  // handler in services/backup.ts and (via process.env) by
+  // scripts/backup-d1.mjs running on the GitHub Actions runner. Defaults
+  // give 30 dailies / 12 weeklies / 6 monthlies under the `d1/` prefix.
+  D1_BACKUP_BUCKET?: string;          // metadata only; binding decides target
+  D1_BACKUP_PREFIX?: string;          // default: "d1"
+  D1_BACKUP_RETAIN_DAILY?: string;    // default: 30
+  D1_BACKUP_RETAIN_WEEKLY?: string;   // default: 12
+  D1_BACKUP_RETAIN_MONTHLY?: string;  // default: 6
 }
 
 export function isProduction(env: Env): boolean {

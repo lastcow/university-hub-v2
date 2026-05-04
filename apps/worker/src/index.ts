@@ -102,6 +102,7 @@ import {
   handleUpdateUserRole,
   handleUpdateUserStatus,
 } from "./routes/users.js";
+import { runScheduledBackup } from "./services/backup.js";
 import { buildPreflightResponse, withCors } from "./utils/cors.js";
 import { errorResponse, jsonOk } from "./utils/responses.js";
 
@@ -169,6 +170,27 @@ export default {
 
     const response = await routeApi(ctx, request, env, url);
     return withCors(response, env, request);
+  },
+
+  // Cron Trigger handler (UNI-27). Cloudflare invokes this from the schedule
+  // declared in wrangler.toml ("0 2 * * *" → 02:00 UTC daily). The handler
+  // is defense-in-depth: the canonical scheduler is the GitHub Actions
+  // workflow at .github/workflows/d1-backup.yml. We log the result as a
+  // structured line so customers running `wrangler tail` see whether the
+  // in-Worker backup actually landed; failures here are non-fatal.
+  async scheduled(_event, env, ctx): Promise<void> {
+    const work = (async () => {
+      try {
+        const result = await runScheduledBackup(env);
+        const tag = result.ok ? "ok" : "skipped";
+        console.log(`[cron:d1-backup] ${tag} ${JSON.stringify(result)}`);
+      } catch (err) {
+        console.error(
+          `[cron:d1-backup] failed: ${(err as Error).message}\n${(err as Error).stack ?? ""}`,
+        );
+      }
+    })();
+    ctx.waitUntil(work);
   },
 } satisfies ExportedHandler<Env>;
 

@@ -424,7 +424,31 @@ back one without the other if a regression is isolated.
 
 D1 migrations are forward-only by design (this repo does not ship `down`
 migrations). If a migration corrupts data, restore from a Cloudflare D1
-backup or write a compensating migration.
+backup or write a compensating migration. The full restore procedure
+lives in [docs/disaster-recovery.md](disaster-recovery.md).
+
+## D1 backups (UNI-27)
+
+Daily D1 backups are written to a Cloudflare R2 bucket
+(`university-hub-backups` by default). Two independent schedulers run
+the backup at 02:00 UTC daily so a failure in one doesn't silently leave
+you without a backup:
+
+- **GitHub Actions** (primary) — `.github/workflows/d1-backup.yml`,
+  invokes `scripts/backup-d1.mjs` from a hosted runner.
+- **Workers Cron Trigger** (defense-in-depth) — declared in
+  `apps/worker/wrangler.toml`; the Worker's `scheduled(...)` handler
+  calls `D1.dump()` and uploads the SQLite binary to R2.
+
+Retention: 30 dailies, 12 weeklies, 6 monthlies. Restoration is run
+through `scripts/restore-d1.mjs` against a scratch D1, never directly
+into production.
+
+Full setup (R2 bucket creation, repo-secret wiring for GitHub Actions,
+the in-Worker binding, lifecycle rules), the restore procedure, and the
+"production data was lost" runbook all live in
+[docs/disaster-recovery.md](disaster-recovery.md). Provision the bucket
+during first deploy so the cron has somewhere to write on day one.
 
 ## Custom domains (future step)
 

@@ -20,7 +20,9 @@
     "db:exec:local": "npm --workspace @university-hub/worker run db:exec:local",
     "db:exec": "npm --workspace @university-hub/worker run db:exec",
     "bootstrap:admin": "node scripts/bootstrap-admin.mjs",
-    "sync:mailgun-templates": "node scripts/sync-mailgun-templates.mjs"
+    "sync:mailgun-templates": "node scripts/sync-mailgun-templates.mjs",
+    "backup:d1": "node scripts/backup-d1.mjs",
+    "restore:d1": "node scripts/restore-d1.mjs"
   },
   "devDependencies": {
     "concurrently": "9.1.0",
