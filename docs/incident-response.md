@@ -197,11 +197,18 @@ user, so suspension takes effect on the next request even if you skip the
 
 ### 3. Rotate session-tier secrets (forces every sign-out)
 
-The session cookie is an opaque DB-backed token, not a signed JWT, so
-forcing all sign-outs is a database action, not a secret rotation. Do
-both — wipe the session table and rotate `SESSION_SECRET` so any future
-session-signing rollout (or an attacker hoping the secret is honored
-later) has a fresh value.
+`SESSION_SECRET` is the HMAC key the Worker uses to derive
+`sessions.token_hash` from the raw session token (see
+`apps/worker/src/auth/session.ts`, UNI-37). Rotating it changes the
+function output for every existing token, so every outstanding row in
+`sessions` becomes unresolvable and the next request from any client
+returns 401. That is the primary sign-everyone-out lever for regular
+user sessions.
+
+`DELETE FROM sessions` does the same job for regular sessions and is
+also required for the parent / MFA-challenge surfaces, which are not
+keyed by `SESSION_SECRET`. **Do both.** They are independent levers and
+both want to fire during S0/S1.
 
 ```bash
 cd apps/worker
@@ -223,14 +230,12 @@ npx wrangler d1 execute DB --remote --command "DELETE FROM parent_sign_in_tokens
 npx wrangler d1 execute DB --remote --command "DELETE FROM parent_sessions;"
 ```
 
-> **Known gap.** Today the Worker does not actually consume
-> `SESSION_SECRET` to sign / verify the session cookie — the cookie is a
-> random opaque token whose SHA-256 is stored in `sessions.token_hash`
-> (`apps/worker/src/auth/session.ts`). Rotating the secret is therefore a
-> *future-proofing* step, not the thing that signs users out. The
-> `DELETE FROM sessions` statement above is what does the work. File a
-> follow-up to wire `SESSION_SECRET` into the cookie if a real signed
-> token is desired (out of scope for this runbook).
+> **Scope reminder.** `SESSION_SECRET` only keys the regular-user
+> session table (`sessions`). It does **not** key `mfa_challenges`,
+> `parent_sign_in_tokens`, or `parent_sessions` — those still hash with
+> plain SHA-256. The four `DELETE` statements below are still the only
+> way to invalidate those three surfaces; the secret rotation above
+> only signs out regular users. Rotate **and** wipe.
 
 ### 4. Rotate Mailgun credentials
 
@@ -700,11 +705,13 @@ paged the operator's email.
   whether it should fire when the leaked secret is unrelated to the
   session layer. Add a "rotate which secrets" decision matrix keyed off
   the *exposed* secret, not the tier alone.
-- **`SESSION_SECRET` is dead weight today.** The Worker doesn't use it.
-  This is documented as a "known gap" in the runbook but is itself a
-  follow-up: either wire it into cookie signing or remove it from the
-  containment script so the runbook stops promising work that isn't
-  actually happening. Tracked as part of the post-tabletop follow-up.
+- **`SESSION_SECRET` is dead weight today.** ~~The Worker doesn't use
+  it.~~ Resolved (UNI-37): `SESSION_SECRET` now keys an HMAC-SHA-256
+  over the raw session token, so rotating it invalidates every row in
+  `sessions` and is a real sign-everyone-out lever for the regular-user
+  surface. Parent sessions, MFA challenges, and parent magic-link
+  tokens still rely on the `DELETE FROM …` statements; both levers go
+  together during S0/S1.
 - **`SKIP_SECRET_SCAN=1` was used without an explanation.** The pre-
   commit hook accepts the env-var override silently. Tighten the hook
   to require a non-empty `SKIP_SECRET_SCAN_REASON=...` value alongside

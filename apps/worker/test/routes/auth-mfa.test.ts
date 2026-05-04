@@ -61,6 +61,7 @@ function envFor(): Env {
     DB: undefined as unknown as D1Database,
     APP_ENV: "development",
     APP_NAME: "University Hub",
+    SESSION_SECRET: "test-session-secret-fixture",
   };
 }
 

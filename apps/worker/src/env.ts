@@ -23,6 +23,13 @@ export interface Env {
   ALLOWED_WEB_ORIGINS?: string;
 
   SESSION_COOKIE_NAME?: string;
+  // HMAC-SHA-256 key used to derive `sessions.token_hash` from the raw
+  // session token (UNI-37). Required at runtime: `auth/session.ts` throws
+  // if this is unset on any sign-in / session-resolve path. Rotating the
+  // value invalidates every outstanding session (existing `token_hash`
+  // values no longer re-derive under the new key), which is the
+  // sign-everyone-out lever the breach runbook calls for during
+  // S0/S1 containment.
   SESSION_SECRET?: string;
 
   // Session lifecycle (UNI-26). Both default to spec values when unset:

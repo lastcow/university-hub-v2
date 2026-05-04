@@ -47,7 +47,7 @@ export async function buildContext(request: Request, env: Env): Promise<RequestC
   const token = cookies[cookieName];
   let auth: AuthState | null = null;
   if (token) {
-    const resolved = await resolveSessionByToken(env.DB, token);
+    const resolved = await resolveSessionByToken(env, token);
     if (resolved && resolved.user.status === "active") {
       const now = new Date();
       const reason = sessionTimeoutReason(env, resolved.session, now);
