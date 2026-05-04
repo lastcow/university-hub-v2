@@ -13,3 +13,4 @@ export * from "./audit-log.js";
 export * from "./email-log.js";
 export * from "./contact-message.js";
 export * from "./health.js";
+export * from "./dashboard.js";
