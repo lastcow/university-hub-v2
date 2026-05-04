@@ -42,3 +42,10 @@ coverage/
 
 # Local screenshots produced by scripts/screenshot-mfa.mjs
 screenshots/
+
+# Per-tenant provisioning artifacts produced by scripts/provision-university.mjs.
+# Each tenant's wrangler.toml holds the D1 database_id and the Worker name —
+# Cloudflare resource identifiers, not secrets, but not interesting to commit.
+provisioning/*
+!provisioning/.gitkeep
+!provisioning/README.md
