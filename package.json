@@ -13,7 +13,11 @@
     "dev:web": "npm --workspace @university-hub/web run dev",
     "build": "npm --workspace @university-hub/web run build",
     "typecheck": "tsc -b --pretty",
-    "typecheck:clean": "tsc -b --clean"
+    "typecheck:clean": "tsc -b --clean",
+    "db:migrate:local": "npm --workspace @university-hub/worker run db:migrate:local",
+    "db:migrate": "npm --workspace @university-hub/worker run db:migrate",
+    "db:exec:local": "npm --workspace @university-hub/worker run db:exec:local",
+    "db:exec": "npm --workspace @university-hub/worker run db:exec"
   },
   "devDependencies": {
     "concurrently": "9.1.0",
