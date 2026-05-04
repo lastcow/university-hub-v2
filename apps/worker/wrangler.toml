@@ -24,3 +24,19 @@ database_name = "university-hub-v2"
 database_id = "1c19aaa3-dbf6-4159-be4e-7fc89fb00752"
 # Migrations live at the repo root (see epic UNI-1, section 5).
 migrations_dir = "../../migrations"
+
+# Daily D1 → R2 backup (UNI-27). 02:00 UTC every day. The Worker's scheduled
+# handler attempts an in-Worker `D1.dump()` and uploads to the R2 bucket bound
+# below. This is the **defense-in-depth** scheduler; the canonical, reliable
+# path is `.github/workflows/d1-backup.yml` which calls `wrangler d1 export`
+# from a GitHub Actions runner. See docs/disaster-recovery.md.
+[triggers]
+crons = ["0 2 * * *"]
+
+# R2 backup bucket binding — `env.BACKUPS` in the Worker. The bucket itself is
+# provisioned out-of-band (see docs/disaster-recovery.md → "Provision the R2
+# bucket"). Customers who don't want the in-Worker cron path can simply omit
+# this binding and rely on the GitHub Actions workflow.
+[[r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "university-hub-backups"
