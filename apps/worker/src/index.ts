@@ -7,6 +7,10 @@ import {
   rateLimitedResponse,
 } from "./middleware/rate-limit.js";
 import {
+  handleAssessmentAnalyticsSummary,
+  handleCourseAnalyticsSummary,
+} from "./routes/analytics.js";
+import {
   handleCreateAssessment,
   handleDeleteAssessment,
   handleListAssessments,
@@ -133,6 +137,10 @@ const COURSE_ASSESSMENTS_RE =
   /^\/api\/courses\/([0-9a-fA-F-]{36})\/assessments\/?$/;
 const COURSE_GRADES_RE =
   /^\/api\/courses\/([0-9a-fA-F-]{36})\/grades\/?$/;
+const COURSE_ANALYTICS_SUMMARY_RE =
+  /^\/api\/courses\/([0-9a-fA-F-]{36})\/analytics\/summary\/?$/;
+const COURSE_ANALYTICS_ASSESSMENT_RE =
+  /^\/api\/courses\/([0-9a-fA-F-]{36})\/analytics\/assessment\/([0-9a-fA-F-]{36})\/?$/;
 const ASSESSMENT_ID_RE = /^\/api\/assessments\/([0-9a-fA-F-]{36})\/?$/;
 const GRADE_ID_RE = /^\/api\/grades\/([0-9a-fA-F-]{36})\/?$/;
 const STUDENT_GRADES_RE =
@@ -489,6 +497,26 @@ async function routeApi(
       if (request.method === "GET") {
         return handleListCourseGrades(ctx, courseId);
       }
+    }
+    // Faculty course analytics (UNI-31). Both routes are matched before the
+    // bare-id course regex so `/courses/:id/analytics/...` doesn't get
+    // swallowed by `GET /api/courses/:id`.
+    const courseAnalyticsAssessmentMatch =
+      COURSE_ANALYTICS_ASSESSMENT_RE.exec(url.pathname);
+    if (courseAnalyticsAssessmentMatch && request.method === "GET") {
+      return handleAssessmentAnalyticsSummary(
+        ctx,
+        courseAnalyticsAssessmentMatch[1] as string,
+        courseAnalyticsAssessmentMatch[2] as string,
+      );
+    }
+    const courseAnalyticsSummaryMatch =
+      COURSE_ANALYTICS_SUMMARY_RE.exec(url.pathname);
+    if (courseAnalyticsSummaryMatch && request.method === "GET") {
+      return handleCourseAnalyticsSummary(
+        ctx,
+        courseAnalyticsSummaryMatch[1] as string,
+      );
     }
     const courseMatch = COURSE_ID_RE.exec(url.pathname);
     if (courseMatch) {

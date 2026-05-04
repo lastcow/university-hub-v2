@@ -9,6 +9,7 @@ import { AccessDeniedPage } from "@/pages/AccessDeniedPage";
 import { AuditLogsPage } from "@/pages/AuditLogsPage";
 import { CourseDetailPage } from "@/pages/CourseDetailPage";
 import { CourseEditPage } from "@/pages/CourseEditPage";
+import { CourseAnalyticsPage } from "@/pages/CourseAnalyticsPage";
 import { CourseGradebookPage } from "@/pages/CourseGradebookPage";
 import { CourseNewPage } from "@/pages/CourseNewPage";
 import { GradeAccessLogPage } from "@/pages/GradeAccessLogPage";
@@ -90,6 +91,10 @@ export default function App() {
             <Route
               path="courses/:id/grades"
               element={<CourseGradebookPage />}
+            />
+            <Route
+              path="courses/:id/analytics"
+              element={<CourseAnalyticsPage />}
             />
             <Route path="students" element={<StudentsPage />} />
             <Route path="students/:id" element={<StudentDetailPage />} />

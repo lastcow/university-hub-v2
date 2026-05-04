@@ -74,6 +74,16 @@ export interface Env {
   RATE_LIMIT_API_ANON_MAX?: string;                      // default 30
   RATE_LIMIT_API_ANON_WINDOW_SECONDS?: string;           // default 60
 
+  // Faculty analytics suppression threshold (UNI-31). Aggregates over fewer
+  // than this many students are returned as `{ suppressed: true }` to prevent
+  // re-identification in small classes. Defaults to 5 when unset; non-numeric
+  // or zero values fall back to the default.
+  ANALYTICS_MIN_N?: string;
+  // Pass-rate threshold for course/assessment analytics, expressed as a
+  // percentage of `max_score` (UNI-31). Default 60. Configurable so an
+  // institution that grades on a 70% pass line can swap it without code.
+  ANALYTICS_PASS_THRESHOLD_PCT?: string;
+
   // D1 → R2 backup overrides (UNI-27). Read by both the in-Worker cron
   // handler in services/backup.ts and (via process.env) by
   // scripts/backup-d1.mjs running on the GitHub Actions runner. Defaults
