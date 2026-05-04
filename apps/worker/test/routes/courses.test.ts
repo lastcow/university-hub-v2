@@ -14,6 +14,7 @@ import {
   handleCreateCourseAssignment,
   handleDeleteCourse,
   handleDeleteCourseAssignment,
+  handleGetCourse,
   handleListCourseAssignments,
   handleListCourses,
   handleUpdateCourse,
@@ -521,6 +522,93 @@ describe("Course assignments — DELETE", () => {
     );
     expect(res.status).toBe(200);
     expect(db.executions.some((e) => e.normalizedSql.startsWith("DELETE FROM course_assignments"))).toBe(true);
+  });
+});
+
+describe("GET /api/courses/:id — UNI-22 per-course scoping smoke test", () => {
+  // Faculty actor in UNI_A — assignment status is set per-test via the
+  // `select role from course_assignments` resolver.
+  const facultyActor = {
+    id: "00000000-0000-0000-0000-0000000000aa",
+    email: "fac@example.com",
+    name: "Faculty",
+    role: "faculty" as const,
+    status: "active" as const,
+    university_id: UNI_A,
+  };
+
+  function dbWithAssignment(opts: {
+    assignedTo?: { courseId: string; role: "faculty" | "teacher" | "teacher_assistant" };
+  }): ProgrammableD1 {
+    const db = makeDb();
+    // Helper queries the courses table by (id, university_id) — the
+    // existing makeDb resolver already handles `SELECT id FROM universities`
+    // and the course list SELECTs, but the helper uses
+    // `SELECT id, university_id FROM courses WHERE id = ?` which the existing
+    // resolvers don't handle. Add it here.
+    db.onFirst((sql, params) => {
+      const lower = sql.toLowerCase();
+      if (lower.startsWith("select id, university_id from courses")) {
+        const id = String(params[0]);
+        if (id === COURSE_A) return { id: COURSE_A, university_id: UNI_A };
+        if (id === COURSE_B) return { id: COURSE_B, university_id: UNI_B };
+        return null;
+      }
+      if (lower.startsWith("select role from course_assignments")) {
+        const courseId = String(params[0]);
+        const userId = String(params[1]);
+        const allowed = new Set(params.slice(2).map(String));
+        if (
+          opts.assignedTo &&
+          opts.assignedTo.courseId === courseId &&
+          userId === facultyActor.id &&
+          allowed.has(opts.assignedTo.role)
+        ) {
+          return { role: opts.assignedTo.role };
+        }
+        return null;
+      }
+      return undefined;
+    });
+    return db;
+  }
+
+  it("faculty assigned to the course can read it (200)", async () => {
+    const db = dbWithAssignment({ assignedTo: { courseId: COURSE_A, role: "faculty" } });
+    const res = await handleGetCourse(ctx(facultyActor, db), COURSE_A);
+    expect(res.status).toBe(200);
+    const body = await jsonBody<{ data: { id: string } }>(res);
+    expect(body.data.id).toBe(COURSE_A);
+  });
+
+  it("faculty NOT assigned gets 404 (probe-resistant)", async () => {
+    const db = dbWithAssignment({});
+    const res = await handleGetCourse(ctx(facultyActor, db), COURSE_A);
+    expect(res.status).toBe(404);
+  });
+
+  it("faculty assigned to course A cannot read course B (404)", async () => {
+    const db = dbWithAssignment({ assignedTo: { courseId: COURSE_A, role: "faculty" } });
+    // Same actor, different course.
+    const res = await handleGetCourse(ctx(facultyActor, db), COURSE_B);
+    expect(res.status).toBe(404);
+  });
+
+  it("super_admin still bypasses (200) without an assignments lookup", async () => {
+    const db = dbWithAssignment({});
+    const res = await handleGetCourse(ctx(ACTORS.superAdmin, db), COURSE_A);
+    expect(res.status).toBe(200);
+    expect(
+      db.executions.some((e) =>
+        e.normalizedSql.toLowerCase().startsWith("select role from course_assignments"),
+      ),
+    ).toBe(false);
+  });
+
+  it("university_admin in same uni still bypasses (200)", async () => {
+    const db = dbWithAssignment({});
+    const res = await handleGetCourse(ctx(ACTORS.uniAAdmin, db), COURSE_A);
+    expect(res.status).toBe(200);
   });
 });
 

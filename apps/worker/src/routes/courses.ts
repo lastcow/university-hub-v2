@@ -29,6 +29,13 @@ import {
 
 import type { UserRow } from "../auth/session.js";
 import { execute, queryAll, queryFirst, type Row } from "../db/index.js";
+import {
+  CourseScopeError,
+  assertActorOnCourse,
+  courseScopeErrorResponse,
+  isCourseScopedRole,
+  toActor,
+} from "../db/scoped.js";
 import { requireAuth, type RequestContext } from "../middleware/auth.js";
 import { writeAuditLog } from "../services/audit.js";
 import { errorResponse, jsonOk } from "../utils/responses.js";
@@ -314,6 +321,18 @@ export async function handleGetCourse(
   const auth = requireAuth(ctx);
   if (auth instanceof Response) return auth;
   const actor = auth.user;
+
+  // UNI-22 smoke-test integration: faculty / teacher / teacher_assistant must
+  // be assigned to the course (via course_assignments) to read it. Admins and
+  // other roles fall through to the prior canRead() check below.
+  if (isCourseScopedRole(actor.role)) {
+    try {
+      await assertActorOnCourse(ctx.env.DB, toActor(actor), courseId);
+    } catch (err) {
+      if (err instanceof CourseScopeError) return courseScopeErrorResponse(err);
+      throw err;
+    }
+  }
 
   const row = await queryFirst<CourseListRow>(
     ctx.env.DB,
