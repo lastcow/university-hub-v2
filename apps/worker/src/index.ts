@@ -1,38 +1,41 @@
-import type { ApiResponse, HealthResponse } from "@university-hub/shared";
+import type { HealthResponse } from "@university-hub/shared";
 
-export interface Env {
-  DB: D1Database;
-  ASSETS: Fetcher;
-}
+import type { Env } from "./env.js";
+import { buildContext } from "./middleware/auth.js";
+import { handleMe, handleSignIn, handleSignOut } from "./routes/auth.js";
+import { errorResponse, jsonOk } from "./utils/responses.js";
+
+export type { Env } from "./env.js";
 
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
 
+    if (!url.pathname.startsWith("/api/")) {
+      return env.ASSETS.fetch(request);
+    }
+
+    const ctx = await buildContext(request, env);
+
     if (url.pathname === "/api/health" && request.method === "GET") {
-      const body: ApiResponse<HealthResponse> = {
+      const body: HealthResponse = {
         ok: true,
-        data: {
-          ok: true,
-          service: "university-hub-worker",
-          timestamp: new Date().toISOString(),
-        },
+        service: "university-hub-worker",
+        timestamp: new Date().toISOString(),
       };
-      return Response.json(body);
+      return jsonOk(body);
     }
 
-    if (url.pathname.startsWith("/api/")) {
-      const body: ApiResponse<never> = {
-        ok: false,
-        error: {
-          code: "not_found",
-          message: "The requested resource was not found.",
-          status: 404,
-        },
-      };
-      return Response.json(body, { status: 404 });
+    if (url.pathname === "/api/auth/sign-in" && request.method === "POST") {
+      return handleSignIn(ctx);
+    }
+    if (url.pathname === "/api/auth/sign-out" && request.method === "POST") {
+      return handleSignOut(ctx);
+    }
+    if (url.pathname === "/api/auth/me" && request.method === "GET") {
+      return handleMe(ctx);
     }
 
-    return env.ASSETS.fetch(request);
+    return errorResponse(404, "not_found", "The requested resource was not found.");
   },
 } satisfies ExportedHandler<Env>;
