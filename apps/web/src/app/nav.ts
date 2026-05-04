@@ -3,11 +3,10 @@
 // the roles that may *see* the link; backend authorization is the source of
 // truth for what those roles may actually do.
 //
-// Real domain pages (`/app/universities`, `/app/users`, etc.) land in
-// UNI-11+; for now most items point to placeholder routes inside the shell
-// so the nav reflects the eventual IA. Each item also flags a route the
-// dashboard knows is "not implemented yet" so unknown routes render the
-// not-found UX state instead of bouncing back to /app/dashboard.
+// Each role lands on its own default dashboard via /app (see
+// `lib/default-dashboard.ts` and `pages/DefaultDashboardRedirect`); the
+// Overview section's Dashboard link points to that role's home, while the
+// "My workspace" section adds role-specific sub-pages.
 
 import type { LucideIcon } from "lucide-react";
 import {
@@ -38,19 +37,29 @@ export interface NavSection {
   items: readonly NavItem[];
 }
 
-const ALL_STAFF: readonly Role[] = [
+const SYSTEM_DASHBOARD_ROLES: readonly Role[] = [
+  "super_admin",
+  "university_admin",
+  "staff",
+  "faculty",
+  "viewer",
+];
+
+const ADMIN_ONLY: readonly Role[] = ["super_admin", "university_admin"];
+
+// Roles that get the academic directory section (read-only listings).
+const DIRECTORY_VIEWERS: readonly Role[] = [
   "super_admin",
   "university_admin",
   "staff",
   "faculty",
   "teacher",
   "teacher_assistant",
-  "viewer",
 ];
 
-const ADMIN_ONLY: readonly Role[] = ["super_admin", "university_admin"];
-
-const ACADEMIC: readonly Role[] = [
+// Departments / courses are visible to anyone academic. Editing is gated
+// server-side; the listing itself is read-only for non-admins.
+const ACADEMIC_BROWSE: readonly Role[] = [
   "super_admin",
   "university_admin",
   "staff",
@@ -67,17 +76,31 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "Dashboard",
         to: "/app/dashboard",
         icon: LayoutDashboard,
-        roles: [
-          "super_admin",
-          "university_admin",
-          "staff",
-          "faculty",
-          "teacher",
-          "teacher_assistant",
-          "student",
-          "guest",
-          "viewer",
-        ],
+        roles: SYSTEM_DASHBOARD_ROLES,
+      },
+      {
+        label: "Dashboard",
+        to: "/app/teacher/dashboard",
+        icon: LayoutDashboard,
+        roles: ["teacher"],
+      },
+      {
+        label: "Dashboard",
+        to: "/app/teacher-assistant/dashboard",
+        icon: LayoutDashboard,
+        roles: ["teacher_assistant"],
+      },
+      {
+        label: "Dashboard",
+        to: "/app/student/dashboard",
+        icon: LayoutDashboard,
+        roles: ["student"],
+      },
+      {
+        label: "Dashboard",
+        to: "/app/guest/dashboard",
+        icon: LayoutDashboard,
+        roles: ["guest"],
       },
     ],
   },
@@ -111,31 +134,66 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "Departments",
         to: "/app/departments",
         icon: ClipboardList,
-        roles: ACADEMIC,
+        roles: ACADEMIC_BROWSE,
       },
       {
         label: "Courses",
         to: "/app/courses",
         icon: BookOpen,
-        roles: ACADEMIC,
+        roles: ACADEMIC_BROWSE,
       },
+    ],
+  },
+  {
+    label: "Directories",
+    items: [
       {
         label: "Students",
         to: "/app/students",
         icon: GraduationCap,
-        roles: ALL_STAFF,
+        roles: DIRECTORY_VIEWERS,
       },
       {
         label: "Faculty",
         to: "/app/faculty",
         icon: UserSquare2,
-        roles: ACADEMIC,
+        roles: DIRECTORY_VIEWERS,
+      },
+      {
+        label: "Teachers",
+        to: "/app/teachers",
+        icon: UserSquare2,
+        roles: DIRECTORY_VIEWERS,
+      },
+      {
+        label: "Teacher assistants",
+        to: "/app/teacher-assistants",
+        icon: LifeBuoy,
+        roles: DIRECTORY_VIEWERS,
       },
     ],
   },
   {
-    label: "My Workspace",
+    label: "My workspace",
     items: [
+      {
+        label: "My courses",
+        to: "/app/teacher/courses",
+        icon: BookOpen,
+        roles: ["teacher"],
+      },
+      {
+        label: "My students",
+        to: "/app/teacher/students",
+        icon: GraduationCap,
+        roles: ["teacher"],
+      },
+      {
+        label: "My courses",
+        to: "/app/teacher-assistant/courses",
+        icon: BookOpen,
+        roles: ["teacher_assistant"],
+      },
       {
         label: "My courses",
         to: "/app/student/my-courses",
@@ -147,24 +205,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         to: "/app/student/my-profile",
         icon: UserSquare2,
         roles: ["student"],
-      },
-      {
-        label: "Teacher dashboard",
-        to: "/app/teacher/dashboard",
-        icon: LayoutDashboard,
-        roles: ["teacher"],
-      },
-      {
-        label: "TA dashboard",
-        to: "/app/teacher-assistant/dashboard",
-        icon: LayoutDashboard,
-        roles: ["teacher_assistant"],
-      },
-      {
-        label: "Guest dashboard",
-        to: "/app/guest/dashboard",
-        icon: LifeBuoy,
-        roles: ["guest"],
       },
     ],
   },

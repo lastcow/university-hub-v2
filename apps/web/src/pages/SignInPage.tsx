@@ -4,6 +4,7 @@ import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/auth/AuthContext";
 import { ApiClientError } from "@/lib/api";
+import { defaultDashboardForRole } from "@/lib/default-dashboard";
 import { cn } from "@/lib/utils";
 
 interface LocationState {
@@ -11,7 +12,7 @@ interface LocationState {
 }
 
 export function SignInPage() {
-  const { status, signIn } = useAuth();
+  const { status, user, signIn } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -21,7 +22,12 @@ export function SignInPage() {
   const [submitting, setSubmitting] = useState(false);
 
   const fromState = (location.state as LocationState | null)?.from;
-  const redirectTo = fromState && fromState.startsWith("/app/") ? fromState : "/app/dashboard";
+  // Prefer where the user was trying to go before they got bounced; otherwise
+  // fall back to the role-specific default dashboard so each role lands on
+  // their own home page (epic UNI-1 §9, UNI-13 acceptance criterion).
+  const fallback = user ? defaultDashboardForRole(user.role) : "/app/dashboard";
+  const redirectTo =
+    fromState && fromState.startsWith("/app/") ? fromState : fallback;
 
   if (status === "authenticated") {
     return <Navigate to={redirectTo} replace />;
@@ -32,8 +38,12 @@ export function SignInPage() {
     setError(null);
     setSubmitting(true);
     try {
-      await signIn({ email, password });
-      navigate(redirectTo, { replace: true });
+      const next = await signIn({ email, password });
+      const target =
+        fromState && fromState.startsWith("/app/")
+          ? fromState
+          : defaultDashboardForRole(next.role);
+      navigate(target, { replace: true });
     } catch (cause) {
       if (cause instanceof ApiClientError) {
         setError(cause.message);
