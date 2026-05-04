@@ -68,6 +68,7 @@ const CATEGORY_VARIANTS: Record<AuditActionCategory, BadgeProps["variant"]> = {
   course: "outline",
   email: "warning",
   settings: "secondary",
+  mfa: "secondary",
 };
 
 function ActionBadge({ action }: { action: AuditAction }) {

@@ -1,8 +1,14 @@
 // Auth routes: sign-in, sign-out, me. Backend session source of truth.
 //
 // - Sign-in: validate body via shared zod schema, look up user by lowercased
-//   email, verify password with constant-time PBKDF2, create + persist a new
-//   session, set HttpOnly cookie, audit-log `auth.sign_in`, return SessionUser.
+//   email, verify password with constant-time PBKDF2. If the user's role
+//   requires MFA (super_admin / university_admin per UNI-24) the session
+//   cookie is NOT issued — instead we issue a short-lived MFA challenge
+//   cookie and respond with `{ status: "mfa_required", mfa_enrolled }`.
+//   The SPA then completes /api/auth/mfa/{enroll,verify-enroll,challenge}.
+//   For roles that don't require MFA the existing flow runs unchanged:
+//   create + persist a session, set HttpOnly cookie, audit-log
+//   `auth.sign_in`, return `{ status: "ok", user }`.
 // - Sign-out: clear session row (if cookie present), clear cookie, audit-log
 //   `auth.sign_out`. Idempotent.
 // - Me: 401 if unauthenticated, otherwise return SessionUser.
@@ -10,17 +16,22 @@
 // Wrong-email and wrong-password share an identical "Invalid email or
 // password." 401 so the response never reveals whether an account exists.
 
-import { signInInputSchema, type SessionUser } from "@university-hub/shared";
+import {
+  signInInputSchema,
+  type SessionUser,
+  type SignInResponse,
+} from "@university-hub/shared";
 
+import { roleRequiresMfa } from "../auth/mfa-policy.js";
 import { verifyPassword } from "../auth/password.js";
 import {
   createSession,
   deleteSessionByToken,
   toSessionUser,
-  type UserRow,
 } from "../auth/session.js";
 import { execute, queryFirst } from "../db/index.js";
 import type { RequestContext } from "../middleware/auth.js";
+import { issueMfaChallenge, type MfaUserRow } from "./mfa.js";
 import { writeAuditLog } from "../services/audit.js";
 import {
   buildSessionClearCookie,
@@ -57,10 +68,13 @@ export async function handleSignIn(ctx: RequestContext): Promise<Response> {
     return errorResponse(401, "invalid_credentials", INVALID_CREDENTIALS);
   }
 
-  const user = await queryFirst<UserRow>(
+  // Pull MFA columns alongside the rest in one query so the MFA gate below
+  // doesn't need a second round-trip.
+  const user = await queryFirst<MfaUserRow>(
     ctx.env.DB,
     `SELECT id, email, password_hash, name, role, status, university_id,
-            last_sign_in_at, created_at, updated_at
+            last_sign_in_at, created_at, updated_at,
+            mfa_secret, mfa_enabled_at, mfa_recovery_codes_hash
        FROM users
       WHERE email = ?
       LIMIT 1`,
@@ -84,6 +98,18 @@ export async function handleSignIn(ctx: RequestContext): Promise<Response> {
     );
   }
 
+  // MFA gate: if the role requires it, hand off to the challenge flow
+  // instead of issuing a session. The actual `auth.sign_in` audit row is
+  // written when the session is finally created in routes/mfa.ts.
+  if (roleRequiresMfa(user.role)) {
+    const challenge = await issueMfaChallenge(ctx, user);
+    const body: SignInResponse = {
+      status: "mfa_required",
+      mfa_enrolled: challenge.enrolled,
+    };
+    return jsonOk(body, { headers: { "set-cookie": challenge.setCookie } });
+  }
+
   const userAgent = ctx.request.headers.get("user-agent");
   const ipAddress =
     ctx.request.headers.get("cf-connecting-ip") ??
@@ -96,10 +122,11 @@ export async function handleSignIn(ctx: RequestContext): Promise<Response> {
     userAgent,
   });
 
+  const now = new Date().toISOString();
   await execute(
     ctx.env.DB,
     `UPDATE users SET last_sign_in_at = ?, updated_at = ? WHERE id = ?`,
-    [new Date().toISOString(), new Date().toISOString(), user.id],
+    [now, now, user.id],
   );
 
   await writeAuditLog(ctx.env.DB, {
@@ -118,9 +145,8 @@ export async function handleSignIn(ctx: RequestContext): Promise<Response> {
     expires: created.expiresAt,
   });
 
-  return jsonOk(sessionUser, {
-    headers: { "set-cookie": setCookie },
-  });
+  const body: SignInResponse = { status: "ok", user: sessionUser };
+  return jsonOk(body, { headers: { "set-cookie": setCookie } });
 }
 
 export async function handleSignOut(ctx: RequestContext): Promise<Response> {
@@ -153,3 +179,4 @@ export function handleMe(ctx: RequestContext): Response {
   const sessionUser: SessionUser = toSessionUser(ctx.auth.user);
   return jsonOk(sessionUser);
 }
+

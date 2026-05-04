@@ -7,3 +7,4 @@ export * from "./user.js";
 export * from "./department.js";
 export * from "./course.js";
 export * from "./settings.js";
+export * from "./mfa.js";

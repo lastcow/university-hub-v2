@@ -8,7 +8,11 @@ import {
   type ReactNode,
 } from "react";
 
-import type { SessionUser, SignInInput } from "@university-hub/shared";
+import type {
+  SessionUser,
+  SignInInput,
+  SignInResponse,
+} from "@university-hub/shared";
 
 import { ApiClientError } from "@/lib/api";
 import { fetchMe, signIn as apiSignIn, signOut as apiSignOut } from "@/lib/auth";
@@ -18,7 +22,15 @@ export type AuthStatus = "loading" | "authenticated" | "unauthenticated";
 export interface AuthContextValue {
   status: AuthStatus;
   user: SessionUser | null;
-  signIn: (input: SignInInput) => Promise<SessionUser>;
+  /**
+   * Initiates sign-in. Returns the worker's `SignInResponse` so the caller
+   * can branch on `status === "mfa_required"` and route to the MFA step.
+   * On `status === "ok"` the auth state is also flipped to authenticated
+   * here, so existing call sites that ignore the return value still work.
+   */
+  signIn: (input: SignInInput) => Promise<SignInResponse>;
+  /** Used by the MFA step after a successful TOTP / recovery verification. */
+  setSessionUser: (user: SessionUser) => void;
   signOut: () => Promise<void>;
   refresh: () => Promise<void>;
 }
@@ -57,9 +69,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = useCallback(async (input: SignInInput) => {
     const next = await apiSignIn(input);
+    if (next.status === "ok") {
+      setUser(next.user);
+      setStatus("authenticated");
+    }
+    return next;
+  }, []);
+
+  const setSessionUser = useCallback((next: SessionUser) => {
     setUser(next);
     setStatus("authenticated");
-    return next;
   }, []);
 
   const signOut = useCallback(async () => {
@@ -76,10 +95,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       status,
       user,
       signIn,
+      setSessionUser,
       signOut,
       refresh: () => refresh(),
     }),
-    [status, user, signIn, signOut, refresh],
+    [status, user, signIn, setSessionUser, signOut, refresh],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
