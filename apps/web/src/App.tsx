@@ -6,6 +6,7 @@ import { ProtectedRoute } from "@/auth/ProtectedRoute";
 import { Toaster } from "@/components/ui/toaster";
 import { AcceptInvitationPage } from "@/pages/AcceptInvitationPage";
 import { AccessDeniedPage } from "@/pages/AccessDeniedPage";
+import { AuditLogsPage } from "@/pages/AuditLogsPage";
 import { CourseDetailPage } from "@/pages/CourseDetailPage";
 import { CourseEditPage } from "@/pages/CourseEditPage";
 import { CourseNewPage } from "@/pages/CourseNewPage";
@@ -16,6 +17,7 @@ import { DepartmentEditPage } from "@/pages/DepartmentEditPage";
 import { DepartmentNewPage } from "@/pages/DepartmentNewPage";
 import { DepartmentsPage } from "@/pages/DepartmentsPage";
 import { DefaultDashboardRedirect } from "@/pages/DefaultDashboardRedirect";
+import { EmailLogsPage } from "@/pages/EmailLogsPage";
 import { FacultyDetailPage } from "@/pages/FacultyDetailPage";
 import { FacultyPage } from "@/pages/FacultyPage";
 import { GuestDashboardPage } from "@/pages/GuestDashboardPage";
@@ -116,6 +118,8 @@ export default function App() {
               element={<StudentMyProfilePage />}
             />
             <Route path="guest/dashboard" element={<GuestDashboardPage />} />
+            <Route path="audit-logs" element={<AuditLogsPage />} />
+            <Route path="email-logs" element={<EmailLogsPage />} />
             <Route path="ux" element={<UxStatesPage />} />
             <Route path="access-denied" element={<AccessDeniedPage />} />
             <Route path="*" element={<NotFoundPage />} />

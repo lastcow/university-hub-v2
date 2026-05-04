@@ -21,3 +21,19 @@ export interface EmailLog {
   related_entity_id: Id | null;
   created_at: IsoDateString;
 }
+
+/**
+ * Row returned by `GET /api/email-logs`. Includes the joined university name
+ * so the admin table doesn't need a second lookup per row.
+ */
+export interface EmailLogListItem extends EmailLog {
+  university_name: string | null;
+}
+
+export interface EmailLogListResponse {
+  items: EmailLogListItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
