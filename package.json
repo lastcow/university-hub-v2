@@ -24,7 +24,11 @@
     "backup:d1": "node scripts/backup-d1.mjs",
     "restore:d1": "node scripts/restore-d1.mjs",
     "provision:university": "node scripts/provision-university.mjs",
-    "decommission:university": "node scripts/decommission-university.mjs"
+    "decommission:university": "node scripts/decommission-university.mjs",
+    "audit:gate": "node scripts/audit-gate.mjs",
+    "license:check": "node scripts/license-check.mjs",
+    "setup:hooks": "node scripts/setup-git-hooks.mjs",
+    "postinstall": "node scripts/setup-git-hooks.mjs"
   },
   "devDependencies": {
     "concurrently": "9.1.0",

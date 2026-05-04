@@ -63,6 +63,7 @@ university-hub-v2/
     database.md                # schema rationale, migrations, password hashing
     deployment.md              # full Cloudflare deploy walkthrough
     mailgun.md                 # template names, variables, account setup
+    security-ci.md             # dependency scanning + SAST gates (UNI-29)
   mailgun_templates/           # canonical Mailgun template HTML + plaintext + meta
   scripts/
     bootstrap-admin.mjs            # production: create the first super_admin
@@ -72,6 +73,10 @@ university-hub-v2/
     restore-d1.mjs                 # restore a D1 dump from R2 (UNI-27)
     provision-university.mjs       # spin up a new customer tenant end-to-end (UNI-28)
     decommission-university.mjs    # tear a customer tenant back down (UNI-28)
+    audit-gate.mjs                 # npm audit CI gate (UNI-29)
+    license-check.mjs              # license-allowlist CI gate (UNI-29)
+    setup-git-hooks.mjs            # wires core.hooksPath to scripts/git-hooks (UNI-29)
+    git-hooks/pre-commit           # secret-scan pre-commit hook (UNI-29)
   provisioning/                # generated per-tenant wrangler.toml files (gitignored)
   .dev.vars.example            # Worker local secrets template
   .env.example                 # Frontend (Vite) env template
@@ -98,6 +103,10 @@ cp .dev.vars.example apps/worker/.dev.vars
 cp .env.example apps/web/.env
 # (Mailgun vars in .dev.vars can stay as the placeholder sentinels — the
 # email service short-circuits to a "not configured" failure on those.)
+
+# `npm install` also wires this checkout's pre-commit hook (secret-scan
+# gate; see docs/security-ci.md). If the postinstall is skipped for any
+# reason, run `npm run setup:hooks`.
 
 # Apply migrations + seed dev data into the local D1 sqlite store.
 npm run db:migrate:local

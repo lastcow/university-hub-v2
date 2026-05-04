@@ -1,0 +1,52 @@
+# .audit-ignore — npm audit suppressions, consumed by scripts/audit-gate.mjs.
+#
+# Add an entry here ONLY when a high/critical advisory cannot be remediated
+# right now (no upstream patch, false positive, dev-only path that is not
+# reachable from production code, etc.). Every suppression is technical
+# debt — link the tracking issue in the justification so it can be
+# revisited later.
+#
+# Format
+# ------
+#   - One advisory id per non-comment, non-blank line.
+#   - Valid id forms: GHSA-xxxx-xxxx-xxxx  or  CVE-YYYY-NNNN
+#   - Each id MUST be preceded by at least one comment line (`# ...`)
+#     giving the justification. The gate refuses to run if it sees a bare id.
+#   - A blank line resets the "preceding comment" state, so each suppression
+#     stands on its own.
+
+# 2026-05-04 (UNI-29). vitest is a devDependency. The advisory only fires if
+# a developer is running `vitest --api` and visits a malicious site in the
+# same browser session — not reachable from the production Worker bundle
+# (vitest never ships to Cloudflare). Fix is vitest@>=2.1.9, which crosses
+# the pinned 2.1.8 and is bundled with the wider dev-tooling refresh
+# tracked separately. Reassess by 2026-08-01.
+GHSA-9crc-q9x8-hgqq
+
+# 2026-05-04 (UNI-29). wrangler is a devDependency used by operators and CI
+# at deploy time, never inside the runtime Worker. The OS-command-injection
+# vector requires attacker-controlled flag values being passed to
+# `wrangler pages deploy`; our deploy paths take inputs from version-pinned
+# scripts, not external input. Patch lives in wrangler@>=3.114.x — cuts
+# across the dev-tooling refresh; tracked separately. Reassess by 2026-08-01.
+GHSA-36p8-mvp6-cv38
+
+# 2026-05-04 (UNI-29). vite is a devDependency used by the SPA dev server
+# only — `vite build` produces static files for Cloudflare Pages and vite
+# itself never runs in production. The arbitrary-file-read vector targets
+# the WebSocket interface of the local dev server. Patch lives in
+# vite@>=6.4.2 (from 6.0.3); part of the dev-tooling refresh tracked
+# separately. Reassess by 2026-08-01.
+GHSA-p9ff-h696-f583
+
+# 2026-05-04 (UNI-29). undici is a transitive devDependency of wrangler /
+# miniflare. Both are dev/deploy-time tools; undici never ships in the
+# production Worker bundle. The two high advisories are WebSocket-handler
+# DoS / unhandled-exception conditions inside the local dev server.
+# Resolution comes with the wrangler upgrade above. Reassess by 2026-08-01.
+GHSA-vrm6-8vpv-qv8q
+
+# 2026-05-04 (UNI-29). Same package and risk window as the entry above —
+# undici WebSocket handler, dev-only exposure via wrangler / miniflare.
+# Reassess by 2026-08-01.
+GHSA-v9p9-hfj2-hcw8
