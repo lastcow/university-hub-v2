@@ -1,0 +1,647 @@
+// MFA endpoints for the TOTP enrollment + challenge flow (UNI-24).
+//
+// State machine:
+//
+//   1. POST /api/auth/sign-in
+//        For roles in roleRequiresMfa: instead of a session cookie, the
+//        worker issues a short-lived (5 min) `mfa_challenge` cookie and
+//        responds with `{ status: "mfa_required", mfa_enrolled }`.
+//   2a. mfa_enrolled === false:
+//        POST /api/auth/mfa/enroll
+//          Generates secret + otpauth URL + 10 recovery codes. Returns
+//          codes ONCE; persists secret + hashed recovery codes (but does
+//          NOT yet flip mfa_enabled_at).
+//        POST /api/auth/mfa/verify-enroll  { code }
+//          Confirms first TOTP code, sets mfa_enabled_at, deletes the
+//          challenge row, issues the real session cookie.
+//   2b. mfa_enrolled === true:
+//        POST /api/auth/mfa/challenge  { code }
+//          Accepts a 6-digit TOTP or a recovery code (single-use).
+//          On success: deletes challenge, issues session.
+//
+// Already-authenticated user surface (Settings → Security tab):
+//   - GET  /api/auth/mfa/status          → enrollment status
+//   - POST /api/auth/mfa/recovery-codes  → regenerate (rotates old codes)
+//   - POST /api/auth/mfa/disable         → only when role no longer
+//                                          requires MFA OR another super_admin
+//
+// All actions write audit rows (see services/audit.ts and
+// shared/constants/audit-actions.ts).
+
+import {
+  mfaChallengeInputSchema,
+  mfaDisableInputSchema,
+  mfaRegenerateRecoveryCodesInputSchema,
+  mfaVerifyEnrollInputSchema,
+  type MfaEnrollResponse,
+  type MfaRecoveryCodesResponse,
+  type MfaStatusResponse,
+  type MfaVerifyResponse,
+  type SessionUser,
+} from "@university-hub/shared";
+
+import {
+  createMfaChallenge,
+  deleteAllMfaChallengesForUser,
+  deleteMfaChallenge,
+  resolveMfaChallenge,
+} from "../auth/mfa-challenge.js";
+import { roleRequiresMfa } from "../auth/mfa-policy.js";
+import {
+  RECOVERY_CODE_TOTAL,
+  consumeRecoveryCode,
+  generateRecoveryCodes,
+  hashRecoveryCodes,
+  parseRecoveryHashes,
+  serializeRecoveryHashes,
+} from "../auth/mfa-recovery.js";
+import { verifyPassword } from "../auth/password.js";
+import { createSession, toSessionUser, type UserRow } from "../auth/session.js";
+import {
+  buildOtpAuthUrl,
+  generateTotpSecret,
+  verifyTotpCode,
+} from "../auth/totp.js";
+import { execute, queryFirst } from "../db/index.js";
+import type { Env } from "../env.js";
+import type { RequestContext } from "../middleware/auth.js";
+import { writeAuditLog } from "../services/audit.js";
+import {
+  buildMfaChallengeClearCookie,
+  buildSessionSetCookie,
+} from "../utils/cookies.js";
+import { errorResponse, jsonOk } from "../utils/responses.js";
+
+const SESSION_COOKIE_DEFAULT = "university_hub_session";
+const MFA_CHALLENGE_COOKIE_DEFAULT = "university_hub_mfa_challenge";
+
+export type MfaUserRow = UserRow & {
+  mfa_secret: string | null;
+  mfa_enabled_at: string | null;
+  mfa_recovery_codes_hash: string | null;
+};
+
+function sessionCookieName(env: Env): string {
+  return env.SESSION_COOKIE_NAME || SESSION_COOKIE_DEFAULT;
+}
+
+export function mfaChallengeCookieName(env: Env): string {
+  return env.MFA_CHALLENGE_COOKIE_NAME || MFA_CHALLENGE_COOKIE_DEFAULT;
+}
+
+export async function loadMfaUser(
+  db: D1Database,
+  userId: string,
+): Promise<MfaUserRow | null> {
+  return queryFirst<MfaUserRow>(
+    db,
+    `SELECT id, email, password_hash, name, role, status, university_id,
+            last_sign_in_at, created_at, updated_at,
+            mfa_secret, mfa_enabled_at, mfa_recovery_codes_hash
+       FROM users
+      WHERE id = ?
+      LIMIT 1`,
+    [userId],
+  );
+}
+
+async function readJson(request: Request): Promise<unknown> {
+  try {
+    return await request.json();
+  } catch {
+    return null;
+  }
+}
+
+function getMfaChallengeToken(ctx: RequestContext): string | null {
+  return ctx.cookies[mfaChallengeCookieName(ctx.env)] ?? null;
+}
+
+interface ResolvedChallenge {
+  user: MfaUserRow;
+  token: string;
+}
+
+async function resolveChallengeContext(
+  ctx: RequestContext,
+): Promise<ResolvedChallenge | Response> {
+  const token = getMfaChallengeToken(ctx);
+  if (!token) {
+    return errorResponse(
+      401,
+      "mfa_challenge_required",
+      "Sign in again to complete MFA verification.",
+    );
+  }
+  const challenge = await resolveMfaChallenge(ctx.env.DB, token);
+  if (!challenge) {
+    return errorResponse(
+      401,
+      "mfa_challenge_expired",
+      "Your verification window has expired. Sign in again.",
+    );
+  }
+  const user = await loadMfaUser(ctx.env.DB, challenge.user_id);
+  if (!user || user.status !== "active") {
+    await deleteMfaChallenge(ctx.env.DB, token);
+    return errorResponse(401, "account_not_active", "Account is not active.");
+  }
+  return { user, token };
+}
+
+async function issueSessionForUser(
+  ctx: RequestContext,
+  user: UserRow,
+): Promise<{ sessionUser: SessionUser; setCookie: string }> {
+  const userAgent = ctx.request.headers.get("user-agent");
+  const ipAddress =
+    ctx.request.headers.get("cf-connecting-ip") ??
+    ctx.request.headers.get("x-forwarded-for") ??
+    null;
+
+  const created = await createSession(ctx.env.DB, {
+    userId: user.id,
+    ipAddress,
+    userAgent,
+  });
+
+  const now = new Date().toISOString();
+  await execute(
+    ctx.env.DB,
+    `UPDATE users SET last_sign_in_at = ?, updated_at = ? WHERE id = ?`,
+    [now, now, user.id],
+  );
+
+  await writeAuditLog(ctx.env.DB, {
+    action: "auth.sign_in",
+    actorUserId: user.id,
+    universityId: user.university_id,
+    entityType: "user",
+    entityId: user.id,
+  });
+
+  const setCookie = buildSessionSetCookie(ctx.env, {
+    name: sessionCookieName(ctx.env),
+    value: created.token,
+    expires: created.expiresAt,
+  });
+
+  return { sessionUser: toSessionUser(user), setCookie };
+}
+
+function appendCookie(headers: Headers, cookie: string): void {
+  headers.append("set-cookie", cookie);
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/mfa/enroll
+//
+// Generates a fresh secret + recovery codes for an unenrolled user who has
+// just verified their password. Re-callable until verify-enroll succeeds, in
+// which case `mfa_enabled_at` flips and further enroll calls 409.
+// ---------------------------------------------------------------------------
+export async function handleMfaEnroll(ctx: RequestContext): Promise<Response> {
+  const resolved = await resolveChallengeContext(ctx);
+  if (resolved instanceof Response) return resolved;
+  const { user } = resolved;
+
+  if (user.mfa_enabled_at) {
+    return errorResponse(
+      409,
+      "mfa_already_enrolled",
+      "MFA is already set up for this account. Submit your code instead.",
+    );
+  }
+
+  const secret = generateTotpSecret();
+  const recoveryCodes = generateRecoveryCodes();
+  const recoveryHashes = await hashRecoveryCodes(recoveryCodes);
+
+  await execute(
+    ctx.env.DB,
+    `UPDATE users
+        SET mfa_secret = ?,
+            mfa_recovery_codes_hash = ?,
+            mfa_enabled_at = NULL,
+            updated_at = ?
+      WHERE id = ?`,
+    [
+      secret,
+      serializeRecoveryHashes(recoveryHashes),
+      new Date().toISOString(),
+      user.id,
+    ],
+  );
+
+  const issuer = ctx.env.APP_NAME || "University Hub";
+  const otpauthUrl = buildOtpAuthUrl({
+    secret,
+    accountName: user.email,
+    issuer,
+  });
+
+  const body: MfaEnrollResponse = {
+    secret,
+    otpauth_url: otpauthUrl,
+    recovery_codes: recoveryCodes,
+  };
+  return jsonOk(body);
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/mfa/verify-enroll  { code }
+//
+// Confirms the first TOTP code, sets `mfa_enabled_at`, deletes the MFA
+// challenge row, and issues the real session cookie. Audit: `mfa.enrolled`
+// + the usual `auth.sign_in`.
+// ---------------------------------------------------------------------------
+export async function handleMfaVerifyEnroll(
+  ctx: RequestContext,
+): Promise<Response> {
+  const resolved = await resolveChallengeContext(ctx);
+  if (resolved instanceof Response) return resolved;
+  const { user, token } = resolved;
+
+  const raw = await readJson(ctx.request);
+  const parsed = mfaVerifyEnrollInputSchema.safeParse(raw);
+  if (!parsed.success) {
+    return errorResponse(400, "invalid_request", "Enter the 6-digit code.", {
+      issues: parsed.error.flatten().fieldErrors,
+    });
+  }
+
+  if (!user.mfa_secret) {
+    return errorResponse(
+      409,
+      "mfa_not_started",
+      "Start enrollment before verifying. Refresh and sign in again.",
+    );
+  }
+  if (user.mfa_enabled_at) {
+    return errorResponse(
+      409,
+      "mfa_already_enrolled",
+      "MFA is already enabled for this account.",
+    );
+  }
+
+  const ok = await verifyTotpCode(user.mfa_secret, parsed.data.code);
+  if (!ok) {
+    await writeAuditLog(ctx.env.DB, {
+      action: "mfa.challenge_failed",
+      actorUserId: user.id,
+      universityId: user.university_id,
+      entityType: "user",
+      entityId: user.id,
+      metadata: { stage: "enroll" },
+    });
+    return errorResponse(
+      401,
+      "invalid_mfa_code",
+      "That code didn't match. Try again with the current code from your authenticator.",
+    );
+  }
+
+  const now = new Date().toISOString();
+  await execute(
+    ctx.env.DB,
+    `UPDATE users SET mfa_enabled_at = ?, updated_at = ? WHERE id = ?`,
+    [now, now, user.id],
+  );
+
+  await writeAuditLog(ctx.env.DB, {
+    action: "mfa.enrolled",
+    actorUserId: user.id,
+    universityId: user.university_id,
+    entityType: "user",
+    entityId: user.id,
+  });
+
+  await deleteMfaChallenge(ctx.env.DB, token);
+
+  const { sessionUser, setCookie } = await issueSessionForUser(ctx, user);
+
+  const headers = new Headers();
+  appendCookie(headers, setCookie);
+  appendCookie(
+    headers,
+    buildMfaChallengeClearCookie(ctx.env, mfaChallengeCookieName(ctx.env)),
+  );
+
+  const body: MfaVerifyResponse = { user: sessionUser };
+  return jsonOk(body, { headers });
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/mfa/challenge  { code }
+//
+// Try TOTP first, then recovery code. On success: delete challenge, issue
+// session. Recovery codes are removed from the JSON array on use.
+// ---------------------------------------------------------------------------
+export async function handleMfaChallenge(
+  ctx: RequestContext,
+): Promise<Response> {
+  const resolved = await resolveChallengeContext(ctx);
+  if (resolved instanceof Response) return resolved;
+  const { user, token } = resolved;
+
+  const raw = await readJson(ctx.request);
+  const parsed = mfaChallengeInputSchema.safeParse(raw);
+  if (!parsed.success) {
+    return errorResponse(
+      400,
+      "invalid_request",
+      "Enter your 6-digit code or a recovery code.",
+      { issues: parsed.error.flatten().fieldErrors },
+    );
+  }
+
+  if (!user.mfa_enabled_at || !user.mfa_secret) {
+    return errorResponse(
+      409,
+      "mfa_not_enrolled",
+      "MFA is not set up for this account yet.",
+    );
+  }
+
+  const code = parsed.data.code;
+  const looksLikeTotp = /^\d{6}$/.test(code.replace(/\s+/g, ""));
+
+  let usedRecovery = false;
+  let totpOk = false;
+  if (looksLikeTotp) {
+    totpOk = await verifyTotpCode(user.mfa_secret, code);
+  }
+
+  let updatedRecoveryJson: string | null = null;
+  if (!totpOk) {
+    const result = await consumeRecoveryCode(code, user.mfa_recovery_codes_hash);
+    if (result.matched) {
+      usedRecovery = true;
+      updatedRecoveryJson = result.remainingJson;
+    }
+  }
+
+  if (!totpOk && !usedRecovery) {
+    await writeAuditLog(ctx.env.DB, {
+      action: "mfa.challenge_failed",
+      actorUserId: user.id,
+      universityId: user.university_id,
+      entityType: "user",
+      entityId: user.id,
+    });
+    return errorResponse(
+      401,
+      "invalid_mfa_code",
+      "That code didn't match. Use the current code from your authenticator or a recovery code.",
+    );
+  }
+
+  if (usedRecovery && updatedRecoveryJson !== null) {
+    await execute(
+      ctx.env.DB,
+      `UPDATE users SET mfa_recovery_codes_hash = ?, updated_at = ? WHERE id = ?`,
+      [updatedRecoveryJson, new Date().toISOString(), user.id],
+    );
+    await writeAuditLog(ctx.env.DB, {
+      action: "mfa.recovery_code_used",
+      actorUserId: user.id,
+      universityId: user.university_id,
+      entityType: "user",
+      entityId: user.id,
+      metadata: {
+        remaining: parseRecoveryHashes(updatedRecoveryJson).length,
+      },
+    });
+  }
+
+  await writeAuditLog(ctx.env.DB, {
+    action: "mfa.challenge_passed",
+    actorUserId: user.id,
+    universityId: user.university_id,
+    entityType: "user",
+    entityId: user.id,
+    metadata: { method: usedRecovery ? "recovery_code" : "totp" },
+  });
+
+  await deleteMfaChallenge(ctx.env.DB, token);
+
+  const { sessionUser, setCookie } = await issueSessionForUser(ctx, user);
+
+  const headers = new Headers();
+  appendCookie(headers, setCookie);
+  appendCookie(
+    headers,
+    buildMfaChallengeClearCookie(ctx.env, mfaChallengeCookieName(ctx.env)),
+  );
+
+  const body: MfaVerifyResponse = { user: sessionUser };
+  return jsonOk(body, { headers });
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/auth/mfa/status
+//
+// Read-only. Used by Settings → Security tab to render MFA state.
+// ---------------------------------------------------------------------------
+export async function handleMfaStatus(
+  ctx: RequestContext,
+): Promise<Response> {
+  if (!ctx.auth) {
+    return errorResponse(401, "unauthenticated", "Authentication required.");
+  }
+  const user = await loadMfaUser(ctx.env.DB, ctx.auth.user.id);
+  if (!user) {
+    return errorResponse(404, "user_not_found", "User not found.");
+  }
+  const body: MfaStatusResponse = {
+    required: roleRequiresMfa(user.role),
+    enrolled: Boolean(user.mfa_enabled_at),
+    enabled_at: user.mfa_enabled_at,
+    recovery_codes_remaining: parseRecoveryHashes(
+      user.mfa_recovery_codes_hash,
+    ).length,
+  };
+  return jsonOk(body);
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/mfa/recovery-codes  { password }
+//
+// Regenerate recovery codes. Old codes are invalidated. Requires the user to
+// re-enter their password (defense in depth — limits damage from a stolen
+// active session). Returns the new codes ONCE.
+// ---------------------------------------------------------------------------
+export async function handleMfaRegenerateRecoveryCodes(
+  ctx: RequestContext,
+): Promise<Response> {
+  if (!ctx.auth) {
+    return errorResponse(401, "unauthenticated", "Authentication required.");
+  }
+
+  const raw = await readJson(ctx.request);
+  const parsed = mfaRegenerateRecoveryCodesInputSchema.safeParse(raw);
+  if (!parsed.success) {
+    return errorResponse(400, "invalid_request", "Password is required.", {
+      issues: parsed.error.flatten().fieldErrors,
+    });
+  }
+
+  const user = await loadMfaUser(ctx.env.DB, ctx.auth.user.id);
+  if (!user) {
+    return errorResponse(404, "user_not_found", "User not found.");
+  }
+  if (!user.mfa_enabled_at) {
+    return errorResponse(
+      409,
+      "mfa_not_enrolled",
+      "Enroll in MFA before regenerating recovery codes.",
+    );
+  }
+  const passwordOk = await verifyPassword(parsed.data.password, user.password_hash);
+  if (!passwordOk) {
+    return errorResponse(
+      401,
+      "wrong_password",
+      "That password is not correct.",
+    );
+  }
+
+  const codes = generateRecoveryCodes();
+  const hashes = await hashRecoveryCodes(codes);
+  await execute(
+    ctx.env.DB,
+    `UPDATE users SET mfa_recovery_codes_hash = ?, updated_at = ? WHERE id = ?`,
+    [serializeRecoveryHashes(hashes), new Date().toISOString(), user.id],
+  );
+
+  await writeAuditLog(ctx.env.DB, {
+    action: "mfa.recovery_codes_regenerated",
+    actorUserId: user.id,
+    universityId: user.university_id,
+    entityType: "user",
+    entityId: user.id,
+    metadata: { count: RECOVERY_CODE_TOTAL },
+  });
+
+  const body: MfaRecoveryCodesResponse = { recovery_codes: codes };
+  return jsonOk(body);
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/mfa/disable  { password }
+//
+// Disable MFA on the current account. Only allowed if either:
+//   (a) the role no longer requires MFA, or
+//   (b) the actor is a different super_admin operating on the user — but
+//       that's a future admin-side surface; here we restrict to self-disable
+//       for non-required roles.
+// Requires password re-entry.
+// ---------------------------------------------------------------------------
+export async function handleMfaDisable(
+  ctx: RequestContext,
+): Promise<Response> {
+  if (!ctx.auth) {
+    return errorResponse(401, "unauthenticated", "Authentication required.");
+  }
+
+  const raw = await readJson(ctx.request);
+  const parsed = mfaDisableInputSchema.safeParse(raw);
+  if (!parsed.success) {
+    return errorResponse(400, "invalid_request", "Password is required.", {
+      issues: parsed.error.flatten().fieldErrors,
+    });
+  }
+
+  const user = await loadMfaUser(ctx.env.DB, ctx.auth.user.id);
+  if (!user) {
+    return errorResponse(404, "user_not_found", "User not found.");
+  }
+  if (!user.mfa_enabled_at) {
+    return errorResponse(
+      409,
+      "mfa_not_enrolled",
+      "MFA is not enabled for this account.",
+    );
+  }
+  if (roleRequiresMfa(user.role)) {
+    return errorResponse(
+      403,
+      "mfa_required_for_role",
+      "MFA is mandatory for your role and cannot be disabled.",
+    );
+  }
+  const passwordOk = await verifyPassword(parsed.data.password, user.password_hash);
+  if (!passwordOk) {
+    return errorResponse(
+      401,
+      "wrong_password",
+      "That password is not correct.",
+    );
+  }
+
+  const now = new Date().toISOString();
+  await execute(
+    ctx.env.DB,
+    `UPDATE users
+        SET mfa_secret = NULL,
+            mfa_enabled_at = NULL,
+            mfa_recovery_codes_hash = NULL,
+            updated_at = ?
+      WHERE id = ?`,
+    [now, user.id],
+  );
+  await deleteAllMfaChallengesForUser(ctx.env.DB, user.id);
+
+  await writeAuditLog(ctx.env.DB, {
+    action: "mfa.disabled",
+    actorUserId: user.id,
+    universityId: user.university_id,
+    entityType: "user",
+    entityId: user.id,
+  });
+
+  return jsonOk({ ok: true } as const);
+}
+
+// ---------------------------------------------------------------------------
+// Shared with routes/auth.ts: when a sign-in needs MFA, this builds the
+// challenge cookie + body shape. Kept here so the cookie name and TTL stay
+// next to the rest of the MFA code.
+// ---------------------------------------------------------------------------
+export interface MfaChallengeIssued {
+  setCookie: string;
+  enrolled: boolean;
+}
+
+export async function issueMfaChallenge(
+  ctx: RequestContext,
+  user: MfaUserRow,
+): Promise<MfaChallengeIssued> {
+  // Replace any prior pending challenges for this user — only the latest
+  // sign-in attempt should have a live challenge.
+  await deleteAllMfaChallengesForUser(ctx.env.DB, user.id);
+
+  const userAgent = ctx.request.headers.get("user-agent");
+  const ipAddress =
+    ctx.request.headers.get("cf-connecting-ip") ??
+    ctx.request.headers.get("x-forwarded-for") ??
+    null;
+
+  const created = await createMfaChallenge(ctx.env.DB, {
+    userId: user.id,
+    ipAddress,
+    userAgent,
+  });
+
+  const setCookie = buildSessionSetCookie(ctx.env, {
+    name: mfaChallengeCookieName(ctx.env),
+    value: created.token,
+    expires: created.expiresAt,
+  });
+
+  return {
+    setCookie,
+    enrolled: Boolean(user.mfa_enabled_at),
+  };
+}

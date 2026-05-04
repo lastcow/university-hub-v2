@@ -1,9 +1,17 @@
-import type { SessionUser, SignInInput } from "@university-hub/shared";
+import type {
+  SessionUser,
+  SignInInput,
+  SignInResponse,
+} from "@university-hub/shared";
 
 import { api } from "./api";
 
-export function signIn(input: SignInInput): Promise<SessionUser> {
-  return api.post<SessionUser>("/api/auth/sign-in", input);
+/**
+ * Returns the SignInResponse union — the SPA dispatches on `status` to
+ * decide between landing in /app or routing to the MFA step (UNI-24).
+ */
+export function signIn(input: SignInInput): Promise<SignInResponse> {
+  return api.post<SignInResponse>("/api/auth/sign-in", input);
 }
 
 export function signOut(): Promise<void> {

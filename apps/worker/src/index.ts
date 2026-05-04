@@ -4,6 +4,14 @@ import type { Env } from "./env.js";
 import { buildContext } from "./middleware/auth.js";
 import { handleListAuditLogs } from "./routes/audit-logs.js";
 import { handleMe, handleSignIn, handleSignOut } from "./routes/auth.js";
+import {
+  handleMfaChallenge,
+  handleMfaDisable,
+  handleMfaEnroll,
+  handleMfaRegenerateRecoveryCodes,
+  handleMfaStatus,
+  handleMfaVerifyEnroll,
+} from "./routes/mfa.js";
 import { handleBootstrapSuperAdmin } from "./routes/bootstrap.js";
 import { handleCreateContactMessage } from "./routes/contact.js";
 import { handleListEmailLogs } from "./routes/email-logs.js";
@@ -167,6 +175,34 @@ async function routeApi(
     }
     if (url.pathname === "/api/auth/me" && request.method === "GET") {
       return handleMe(ctx);
+    }
+
+    // MFA endpoints (UNI-24). Enroll/verify-enroll/challenge consume the
+    // short-lived MFA challenge cookie; status/disable/regenerate consume
+    // the regular session cookie.
+    if (url.pathname === "/api/auth/mfa/enroll" && request.method === "POST") {
+      return handleMfaEnroll(ctx);
+    }
+    if (
+      url.pathname === "/api/auth/mfa/verify-enroll" &&
+      request.method === "POST"
+    ) {
+      return handleMfaVerifyEnroll(ctx);
+    }
+    if (url.pathname === "/api/auth/mfa/challenge" && request.method === "POST") {
+      return handleMfaChallenge(ctx);
+    }
+    if (url.pathname === "/api/auth/mfa/status" && request.method === "GET") {
+      return handleMfaStatus(ctx);
+    }
+    if (
+      url.pathname === "/api/auth/mfa/recovery-codes" &&
+      request.method === "POST"
+    ) {
+      return handleMfaRegenerateRecoveryCodes(ctx);
+    }
+    if (url.pathname === "/api/auth/mfa/disable" && request.method === "POST") {
+      return handleMfaDisable(ctx);
     }
 
     if (url.pathname === "/api/dashboard/summary" && request.method === "GET") {

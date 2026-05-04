@@ -92,3 +92,19 @@ export function buildSessionClearCookie(env: Env, name: string): string {
     sameSite,
   });
 }
+
+/**
+ * The MFA challenge cookie carries the short-lived "password verified, MFA
+ * pending" token between sign-in and the MFA endpoints. Same SameSite/Secure
+ * rules as the session cookie since it crosses the same Pages → Worker hop.
+ */
+export function buildMfaChallengeSetCookie(
+  env: Env,
+  options: { name: string; value: string; expires: Date },
+): string {
+  return buildSessionSetCookie(env, options);
+}
+
+export function buildMfaChallengeClearCookie(env: Env, name: string): string {
+  return buildSessionClearCookie(env, name);
+}

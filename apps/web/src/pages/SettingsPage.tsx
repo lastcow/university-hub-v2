@@ -1,7 +1,11 @@
-// /app/settings — university, account, Mailgun status (UNI-15).
+// /app/settings — university, account, security/MFA, Mailgun status
+// (UNI-15 + UNI-24).
 //
 // Account section is always shown to the signed-in user.
 // University section is gated to super_admin / university_admin.
+// Security section shows MFA enrollment state, recovery-code count, and
+// (for non-mandatory roles) a disable button. The regenerate flow rotates
+// recovery codes — old codes are immediately invalidated.
 // Mailgun section displays per-var Configured / Missing configuration; the
 // underlying API never returns secret values, so this page never has access
 // to one and never echoes one.
@@ -13,6 +17,7 @@ import {
   Lock,
   Mail,
   ShieldCheck,
+  ShieldAlert,
   University,
   UserCircle,
   XCircle,
@@ -21,6 +26,7 @@ import {
 import type {
   MailgunStatusResponse,
   MailgunVarStatusEntry,
+  MfaStatusResponse,
   University as UniversityType,
 } from "@university-hub/shared";
 
@@ -40,6 +46,11 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/use-toast";
 import { ApiClientError } from "@/lib/api";
+import {
+  disableMfa,
+  getMfaStatus,
+  regenerateRecoveryCodes,
+} from "@/lib/mfa";
 import { getUniversity } from "@/lib/universities";
 import {
   getMailgunStatus,
@@ -503,35 +514,309 @@ function AccountSection({
 }
 
 // ---------------------------------------------------------------------------
-// Security / session placeholder
+// Security / MFA (UNI-24)
 // ---------------------------------------------------------------------------
 
+interface MfaState {
+  status: LoadStatus;
+  data?: MfaStatusResponse;
+  error?: string;
+}
+
 function SecuritySection() {
+  const [mfa, setMfa] = useState<MfaState>({ status: "idle" });
+  const [newCodes, setNewCodes] = useState<string[] | null>(null);
+
+  const reload = () => {
+    const controller = new AbortController();
+    setMfa({ status: "loading" });
+    getMfaStatus(controller.signal)
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        setMfa({ status: "ok", data });
+      })
+      .catch((cause: unknown) => {
+        if (controller.signal.aborted) return;
+        setMfa({
+          status: "error",
+          error:
+            cause instanceof ApiClientError
+              ? cause.message
+              : "Could not load MFA status.",
+        });
+      });
+    return controller;
+  };
+
+  useEffect(() => {
+    const controller = reload();
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <Card>
       <CardHeader>
         <div className="flex items-center gap-2">
           <Lock className="h-5 w-5 text-muted-foreground" />
-          <CardTitle>Security & sessions</CardTitle>
+          <CardTitle>Security &amp; sessions</CardTitle>
         </div>
         <CardDescription>
-          Single-session-per-user with HttpOnly session cookies. Multi-device
-          session management is planned for a future release.
+          Two-factor authentication (TOTP) protects your account in addition
+          to your password. Your session uses an HttpOnly cookie; sign out
+          from the user menu to revoke it.
         </CardDescription>
       </CardHeader>
-      <CardContent>
-        <div className="flex items-start gap-3 rounded-md border border-border bg-muted/30 p-4 text-sm">
-          <ShieldCheck className="mt-0.5 h-4 w-4 text-muted-foreground" />
-          <div className="space-y-1">
-            <p className="font-medium">This session</p>
-            <p className="text-muted-foreground">
-              You're signed in via a secure HttpOnly cookie. To revoke this
-              session, sign out from the user menu.
-            </p>
-          </div>
-        </div>
+      <CardContent className="space-y-4">
+        {mfa.status === "loading" || mfa.status === "idle" ? (
+          <Skeleton className="h-24 w-full" />
+        ) : mfa.status === "error" ? (
+          <ErrorState
+            title="Couldn't load MFA status"
+            description={mfa.error}
+          />
+        ) : mfa.data ? (
+          <MfaStatusBlock
+            data={mfa.data}
+            onChanged={() => {
+              setNewCodes(null);
+              reload();
+            }}
+            onRegenerated={(codes) => {
+              setNewCodes(codes);
+              reload();
+            }}
+          />
+        ) : null}
+
+        {newCodes ? (
+          <RecoveryCodesPanel codes={newCodes} onDismiss={() => setNewCodes(null)} />
+        ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+function MfaStatusBlock({
+  data,
+  onChanged,
+  onRegenerated,
+}: {
+  data: MfaStatusResponse;
+  onChanged: () => void;
+  onRegenerated: (codes: string[]) => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-3">
+          {data.enrolled ? (
+            <ShieldCheck className="mt-0.5 h-5 w-5 text-emerald-600" />
+          ) : (
+            <ShieldAlert className="mt-0.5 h-5 w-5 text-amber-600" />
+          )}
+          <div className="space-y-1">
+            <p className="font-medium">
+              Two-factor authentication{" "}
+              {data.enrolled ? (
+                <span className="text-emerald-700">enabled</span>
+              ) : data.required ? (
+                <span className="text-amber-700">required at next sign-in</span>
+              ) : (
+                <span className="text-muted-foreground">not set up</span>
+              )}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {data.enrolled
+                ? `${data.recovery_codes_remaining} recovery code${data.recovery_codes_remaining === 1 ? "" : "s"} remaining.`
+                : data.required
+                  ? "Your role requires MFA. You'll be guided through enrollment the next time you sign in."
+                  : "Optional. Enroll on your next sign-in if you'd like the extra protection."}
+            </p>
+            {data.enabled_at ? (
+              <p className="text-xs text-muted-foreground">
+                Enabled {new Date(data.enabled_at).toLocaleDateString()}.
+              </p>
+            ) : null}
+          </div>
+        </div>
+        {data.required ? <Badge variant="warning">Required</Badge> : null}
+      </div>
+
+      {data.enrolled ? (
+        <MfaActions data={data} onChanged={onChanged} onRegenerated={onRegenerated} />
+      ) : null}
+    </div>
+  );
+}
+
+function MfaActions({
+  data,
+  onChanged,
+  onRegenerated,
+}: {
+  data: MfaStatusResponse;
+  onChanged: () => void;
+  onRegenerated: (codes: string[]) => void;
+}) {
+  const [mode, setMode] = useState<"idle" | "regenerate" | "disable">("idle");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const reset = () => {
+    setMode("idle");
+    setPassword("");
+    setError(null);
+  };
+
+  async function onConfirm(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    try {
+      if (mode === "regenerate") {
+        const res = await regenerateRecoveryCodes(password);
+        toast({
+          title: "Recovery codes rotated",
+          description: "Old codes are no longer accepted.",
+          variant: "success",
+        });
+        onRegenerated(res.recovery_codes);
+      } else if (mode === "disable") {
+        await disableMfa(password);
+        toast({
+          title: "MFA disabled",
+          description:
+            "Two-factor authentication has been turned off for your account.",
+          variant: "success",
+        });
+        onChanged();
+      }
+      reset();
+    } catch (cause) {
+      if (cause instanceof ApiClientError) {
+        setError(cause.message);
+      } else {
+        setError("Something went wrong. Please try again.");
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (mode === "idle") {
+    return (
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => setMode("regenerate")}
+        >
+          Regenerate recovery codes
+        </Button>
+        {!data.required ? (
+          <Button
+            type="button"
+            variant="ghost"
+            className="text-destructive hover:text-destructive"
+            onClick={() => setMode("disable")}
+          >
+            Disable MFA
+          </Button>
+        ) : null}
+      </div>
+    );
+  }
+
+  return (
+    <form
+      onSubmit={onConfirm}
+      noValidate
+      className="space-y-3 rounded-md border border-border p-4"
+    >
+      <p className="text-sm font-medium">
+        {mode === "regenerate"
+          ? "Confirm with your password to rotate recovery codes"
+          : "Confirm with your password to disable MFA"}
+      </p>
+      <p className="text-xs text-muted-foreground">
+        {mode === "regenerate"
+          ? "Your existing recovery codes will stop working immediately."
+          : "After disabling, only your password will be required to sign in."}
+      </p>
+      <div className="space-y-2">
+        <Label htmlFor="mfa-confirm-password">Password</Label>
+        <Input
+          id="mfa-confirm-password"
+          type="password"
+          autoComplete="current-password"
+          required
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          disabled={submitting}
+        />
+      </div>
+      {error ? (
+        <div
+          role="alert"
+          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
+          {error}
+        </div>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        <Button type="submit" disabled={submitting || !password}>
+          {submitting
+            ? "Working…"
+            : mode === "regenerate"
+              ? "Rotate recovery codes"
+              : "Disable MFA"}
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={reset}
+          disabled={submitting}
+        >
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function RecoveryCodesPanel({
+  codes,
+  onDismiss,
+}: {
+  codes: string[];
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-4">
+      <p className="text-sm font-medium">
+        New recovery codes — save these now
+      </p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        We will not show these codes again. Each one works exactly once.
+      </p>
+      <ul className="mt-3 grid grid-cols-2 gap-1.5 font-mono text-xs">
+        {codes.map((code) => (
+          <li
+            key={code}
+            className="rounded bg-background px-2 py-1 text-center"
+          >
+            {code}
+          </li>
+        ))}
+      </ul>
+      <div className="mt-3 flex justify-end">
+        <Button type="button" variant="outline" size="sm" onClick={onDismiss}>
+          I've saved them
+        </Button>
+      </div>
+    </div>
   );
 }
 

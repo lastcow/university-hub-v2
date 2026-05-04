@@ -39,3 +39,6 @@ coverage/
 # Misc
 .cache/
 .tmp/
+
+# Local screenshots produced by scripts/screenshot-mfa.mjs
+screenshots/

@@ -23,6 +23,12 @@ export const AUDIT_ACTIONS = [
   "email.sent",
   "email.failed",
   "settings.updated",
+  "mfa.enrolled",
+  "mfa.challenge_passed",
+  "mfa.challenge_failed",
+  "mfa.disabled",
+  "mfa.recovery_code_used",
+  "mfa.recovery_codes_regenerated",
 ] as const;
 
 export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
@@ -48,6 +54,12 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "email.sent": "Email sent",
   "email.failed": "Email failed",
   "settings.updated": "Settings updated",
+  "mfa.enrolled": "MFA enrolled",
+  "mfa.challenge_passed": "MFA challenge passed",
+  "mfa.challenge_failed": "MFA challenge failed",
+  "mfa.disabled": "MFA disabled",
+  "mfa.recovery_code_used": "MFA recovery code used",
+  "mfa.recovery_codes_regenerated": "MFA recovery codes regenerated",
 };
 
 /**
@@ -63,7 +75,8 @@ export type AuditActionCategory =
   | "department"
   | "course"
   | "email"
-  | "settings";
+  | "settings"
+  | "mfa";
 
 export function auditActionCategory(action: AuditAction): AuditActionCategory {
   return action.split(".")[0] as AuditActionCategory;
