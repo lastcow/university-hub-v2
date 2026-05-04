@@ -301,6 +301,23 @@ npx wrangler secret put MAILGUN_REGION          # optional
 npx wrangler secret put SUPPORT_EMAIL           # optional
 ```
 
+**Dashboard-only follow-up.** Several Mailgun-side controls are not
+exposed by the public API and have to be touched in the dashboard by
+hand after the API key is reset — easy to miss at 3 a.m. While you are
+still signed in, also: **(a)** rotate the webhook signing key under
+**Sending → Webhooks → HTTP webhook signing key → Reset** (any
+attacker who held the API key could read the previous signing key, so
+inbound webhook signatures from before the reset are no longer
+trustworthy); **(b)** rotate every domain's SMTP password under
+**Sending → Domain settings → <domain> → SMTP credentials** for any
+sender we use — `wrangler secret put MAILGUN_API_KEY` does not cover
+SMTP-auth callers; **(c)** end every other active dashboard session
+under **Account Settings → Security → Active sessions → Sign out all
+other sessions**, and rotate the account password + 2FA enrolment if
+the account login itself was in scope. See Mailgun's account-security
+guide:
+<https://documentation.mailgun.com/docs/mailgun/user-manual/account-security/>.
+
 A bad rotation is recoverable: the email service short-circuits on a
 missing or invalid key and writes `email_logs.status = 'failed'` with
 `mailgun_not_configured` / `mailgun_http_error` (see
@@ -815,11 +832,14 @@ paged the operator's email.
   rule).~~ Resolved (UNI-39): codified in
   [docs/security-ci.md → 5c. History rewrite (after rotation only)](security-ci.md#5c-history-rewrite-after-rotation-only),
   cross-linked from [step 9 of S0/S1 containment](#9-optional-rewrite-git-history--only-after-rotation).
-- **Incident-directory convention is undefined.** The runbook tells the
-  operator to drop forensic artefacts under `incidents/<stamp>/` but
-  the top-level `.gitignore` does not exclude it; an inattentive `git
-  add` after an incident could check forensic dumps into the repo. Add
-  `incidents/` to `.gitignore`.
+- **Incident-directory convention is undefined.** ~~The runbook tells
+  the operator to drop forensic artefacts under `incidents/<stamp>/`
+  but the top-level `.gitignore` does not exclude it; an inattentive
+  `git add` after an incident could check forensic dumps into the
+  repo. Add `incidents/` to `.gitignore`.~~ Resolved (UNI-35):
+  `incidents/` is excluded by the top-level `.gitignore` (shipped in
+  PR #57 alongside the runbook itself), so forensic dumps cannot be
+  staged accidentally.
 - **Customer escalation contacts are mockup defaults.** Resolved by
   UNI-40 — the [Owners and escalation contacts](#owners-and-escalation-contacts)
   table is now backed by `escalation_contacts` in D1 and editable from
@@ -828,9 +848,14 @@ paged the operator's email.
   surface an `is_mockup` flag so finding mockup values during an
   incident remains an S2 self-incident. Per-deploy launch gate: customer
   must save real values for every row before opening to real students.
-- **Mailgun-side reset is dashboard-only.** The runbook should call out
-  that the Mailgun reset is point-and-click (no API equivalent), so an
-  operator reading this at 3 a.m. doesn't waste time hunting for a CLI.
+- **Mailgun-side reset is dashboard-only.** ~~The runbook should call
+  out that the Mailgun reset is point-and-click (no API equivalent),
+  so an operator reading this at 3 a.m. doesn't waste time hunting
+  for a CLI.~~ Resolved (UNI-41): see the **Dashboard-only follow-up**
+  callout at the end of [step 4](#4-rotate-mailgun-credentials),
+  which lists the manual actions (revoke webhook signing key, rotate
+  SMTP credentials, end other dashboard sessions) and links to
+  Mailgun's account-security docs.
 
 The drill confirmed the runbook is usable end-to-end for an S1 leak of
 `MAILGUN_API_KEY`. None of the surfaced gaps blocked containment; they
