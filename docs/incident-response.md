@@ -712,10 +712,14 @@ paged the operator's email.
   surface. Parent sessions, MFA challenges, and parent magic-link
   tokens still rely on the `DELETE FROM …` statements; both levers go
   together during S0/S1.
-- **`SKIP_SECRET_SCAN=1` was used without an explanation.** The pre-
-  commit hook accepts the env-var override silently. Tighten the hook
-  to require a non-empty `SKIP_SECRET_SCAN_REASON=...` value alongside
-  it, and emit a warning to stderr when the bypass fires.
+- **`SKIP_SECRET_SCAN=1` was used without an explanation.** ~~The pre-
+  commit hook accepts the env-var override silently.~~ Resolved
+  (UNI-38): the hook now refuses `SKIP_SECRET_SCAN=1` unless a
+  non-empty `SKIP_SECRET_SCAN_REASON=...` is set alongside it, and
+  emits a stderr banner with the reason, the user's email, the branch,
+  the staged file list, and a best-effort commit subject so every
+  bypass is auditable. See `docs/security-ci.md` → "Bypassing the
+  hook" for when this is and isn't appropriate.
 - **No documented history-rewrite recipe.** The drill walked through
   `git filter-repo --replace-text` by hand and made up the safety rails
   on the spot (re-clone notice, "old + referenced = don't rewrite"
