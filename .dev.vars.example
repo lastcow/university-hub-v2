@@ -10,3 +10,7 @@ MAILGUN_DOMAIN=replace-with-mailgun-domain
 MAILGUN_FROM_EMAIL=no-reply@example.com
 MAILGUN_FROM_NAME=University Hub
 MAILGUN_REGION=US
+
+# Where /api/contact notifications are delivered (set this to a real inbox in
+# production). Falls back to MAILGUN_FROM_EMAIL when unset.
+SUPPORT_EMAIL=support@example.com
