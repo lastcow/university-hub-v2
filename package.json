@@ -8,10 +8,15 @@
     "packages/*"
   ],
   "scripts": {
+    "dev": "concurrently -n worker,web -c blue,magenta \"npm:dev:worker\" \"npm:dev:web\"",
+    "dev:worker": "npm --workspace @university-hub/worker run dev",
+    "dev:web": "npm --workspace @university-hub/web run dev",
+    "build": "npm --workspace @university-hub/web run build",
     "typecheck": "tsc -b --pretty",
     "typecheck:clean": "tsc -b --clean"
   },
   "devDependencies": {
+    "concurrently": "9.1.0",
     "typescript": "5.6.3"
   },
   "engines": {
