@@ -270,8 +270,66 @@ Patterns covered today (full list in the hook itself):
    - Confirm the value really is fake. Generated examples should never
      match production prefixes — if your fixture matches `sk_live_` or
      `key-<32 hex>`, change the fixture, don't bypass the hook.
-   - Once you've confirmed: bypass with `SKIP_SECRET_SCAN=1 git commit
-     ...` and explain in the commit message.
+   - Once you've confirmed, bypass per the rules below.
+
+### Bypassing the hook (UNI-38)
+
+The bypass requires **two** environment variables. `SKIP_SECRET_SCAN=1`
+alone is rejected with a non-zero exit — silent bypass is not
+permitted.
+
+```bash
+SKIP_SECRET_SCAN=1 \
+SKIP_SECRET_SCAN_REASON="test fixture: fake AKIA-prefixed AWS key in apps/worker/test/auth.test.ts" \
+  git commit -m "test(auth): add session-replay regression fixture"
+```
+
+When both are set the hook still runs to completion (exit 0 = commit
+proceeds), but it prints a stderr banner that records:
+
+- the reason,
+- the user (`git config user.email`),
+- the branch and timestamp,
+- the staged file list,
+- the commit subject (best-effort, captured from the parent process
+  argv on Linux; falls back to a placeholder elsewhere — the resulting
+  commit is the source of truth either way).
+
+#### What goes in `SKIP_SECRET_SCAN_REASON`
+
+A one-line, specific justification. Future-you reading the stderr log
+should be able to tell whether the bypass was warranted.
+
+- **Good:** `"test fixture: fake AKIA-prefixed AWS key in apps/worker/test/auth.test.ts; matches AWS regex but is the public AWS docs sample value"`
+- **Good:** `"docs example: real-shaped Mailgun key in mailgun_templates/.../README.md; rotated and revoked, kept as historical sample"`
+- **Bad:** `"false positive"`, `"fixture"`, `"doc"`, `"."` — too thin to audit.
+
+#### When bypass is appropriate
+
+- Test fixtures that deliberately match a secret regex (so the test
+  exercises the right code path) **and** the value is verifiably fake
+  (public example, mocked, or rotated).
+- Documentation that quotes a known-public sample (e.g. AWS's own
+  `AKIAIOSFODNN7EXAMPLE`).
+
+#### When bypass is NOT appropriate
+
+- A real secret that "we'll rotate later" — rotate first, then commit.
+- A generated test value that happens to match a regex — change the
+  test value instead so the regex no longer matches.
+- A scan failure you don't understand — ask in the PR rather than
+  bypassing.
+
+#### Where the reason should also appear
+
+The stderr banner is local to the developer's terminal. To make the
+bypass auditable end-to-end, the reason should also live in:
+
+1. The **commit message body** (so `git log` shows it), and/or
+2. The **PR description** (so reviewers see it during review).
+
+PR review is the second gate: a reviewer who sees a `SKIP_SECRET_SCAN`
+bypass without a documented reason should send the PR back.
 
 ### Activating the hook
 
@@ -326,6 +384,20 @@ git commit -m "trigger hook"
 git restore --staged README.md
 git checkout -- README.md
 ```
+
+For the bypass-discipline rules (UNI-38), there is a self-contained
+shell test that spins up a throwaway repo and exercises both the
+rejection and warning paths:
+
+```bash
+bash scripts/git-hooks/test-bypass.sh
+```
+
+It validates four behaviors: `SKIP_SECRET_SCAN=1` alone is rejected,
+an empty `SKIP_SECRET_SCAN_REASON=` is also rejected, both env vars
+together emit the banner with the reason and the user email, and the
+underlying secret scan still catches a real-shaped fixture when no
+bypass is requested.
 
 ### License check
 

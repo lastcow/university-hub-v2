@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pre-commit — UNI-29 secret-scan gate.
+# pre-commit — UNI-29 secret-scan gate, UNI-38 bypass discipline.
 #
 # Greps the staged diff for common secret prefixes and aborts the commit if
 # any are found. This is a defense-in-depth check on top of GitHub's
@@ -10,14 +10,99 @@
 # repo's `npm install` runs via the `postinstall` script (see
 # scripts/setup-git-hooks.mjs).
 #
-# Bypass: `SKIP_SECRET_SCAN=1 git commit ...` — only for files that are
-# legitimately allowed to contain a secret-shaped string (test fixtures,
-# documentation examples). The user accepts the risk.
+# Bypass: requires BOTH `SKIP_SECRET_SCAN=1` AND a non-empty
+# `SKIP_SECRET_SCAN_REASON` env var. The hook prints a loud stderr
+# banner with the reason, the user, and the staged context so that
+# bypassed commits are auditable. The reason should also be in the
+# commit message body or PR description. See docs/security-ci.md.
 
 set -eu
 
 if [ "${SKIP_SECRET_SCAN:-}" = "1" ]; then
-  exec >&2 echo "pre-commit: SKIP_SECRET_SCAN=1 set, skipping secret scan."
+  reason="${SKIP_SECRET_SCAN_REASON:-}"
+  if [ -z "$reason" ]; then
+    cat >&2 <<'EOF'
+pre-commit: SKIP_SECRET_SCAN=1 set without SKIP_SECRET_SCAN_REASON.
+Refusing to bypass the secret scan silently.
+
+Set SKIP_SECRET_SCAN_REASON to a one-line justification, e.g.:
+
+  SKIP_SECRET_SCAN=1 \
+  SKIP_SECRET_SCAN_REASON="test fixture: fake AKIA-prefixed AWS key in apps/worker/test/auth.test.ts" \
+    git commit ...
+
+The reason is logged to stderr and should also appear in the commit
+message body or PR description so the bypass is auditable.
+See docs/security-ci.md (section 5b) for when bypass is appropriate.
+EOF
+    exit 1
+  fi
+
+  user_email=$(git config user.email 2>/dev/null || echo '(git config user.email unset)')
+  branch=$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo '(detached HEAD)')
+  timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  # Best-effort commit-subject capture from the parent git process.
+  # Pre-commit runs before COMMIT_EDITMSG is written, so the subject is
+  # not directly available. On Linux we can read /proc/$PPID/cmdline
+  # and pull the -m / --message argument out of the parent's argv.
+  # Falls back to a placeholder on platforms without /proc.
+  subject=""
+  if [ -r "/proc/$PPID/cmdline" ]; then
+    _argv=()
+    mapfile -d '' -t _argv < "/proc/$PPID/cmdline" 2>/dev/null || _argv=()
+    take_next=0
+    for arg in "${_argv[@]}"; do
+      if [ "$take_next" = 1 ]; then
+        subject="$arg"
+        break
+      fi
+      case "$arg" in
+        -m|--message|-F|--file) take_next=1 ;;
+        --message=*) subject="${arg#--message=}"; break ;;
+        -m*) subject="${arg#-m}"; break ;;
+      esac
+    done
+    # If -F/--file pointed at a file, read its first line as the subject.
+    if [ -n "$subject" ] && [ -f "$subject" ] && [ "$take_next" = 1 ]; then
+      subject=$(head -n 1 "$subject" 2>/dev/null || echo "$subject")
+    fi
+  fi
+  if [ -z "$subject" ]; then
+    subject="(see resulting commit — subject not finalized at pre-commit phase)"
+  fi
+
+  staged_files=$(git diff --cached --name-only --diff-filter=ACMRTUXB 2>/dev/null || true)
+  staged_count=$(printf '%s\n' "$staged_files" | grep -c . || true)
+  staged_count=${staged_count:-0}
+
+  cat >&2 <<EOF
+
+================================================================================
+pre-commit: SECRET SCAN BYPASSED (SKIP_SECRET_SCAN=1)
+================================================================================
+  Reason:   ${reason}
+  User:     ${user_email}
+  Branch:   ${branch}
+  Subject:  ${subject}
+  Time:     ${timestamp}
+  Staged:   ${staged_count} file(s)
+EOF
+  if [ -n "$staged_files" ]; then
+    printf '%s\n' "$staged_files" | head -5 | while IFS= read -r f; do
+      echo "            - $f" >&2
+    done
+    if [ "$staged_count" -gt 5 ]; then
+      echo "            ... and $((staged_count - 5)) more" >&2
+    fi
+  fi
+  cat >&2 <<'EOF'
+================================================================================
+This bypass is auditable. Make sure the reason is also in the commit
+message body or PR description so reviewers can confirm it.
+================================================================================
+
+EOF
   exit 0
 fi
 
@@ -90,7 +175,8 @@ If this is a real credential:
   - Rotate it now (do NOT just remove it from the diff — assume it leaked).
   - Then unstage the file and re-commit.
 If this is a false positive (test fixture, documentation example, etc.):
-  - Run with SKIP_SECRET_SCAN=1 git commit ... and explain in the commit message.
+  - Run with both SKIP_SECRET_SCAN=1 and SKIP_SECRET_SCAN_REASON="..."
+    set, and explain the reason in the commit message too.
 See docs/security-ci.md for triage details.
 EOF
   exit 1
