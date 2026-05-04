@@ -2,22 +2,55 @@
 // SHA-256 hash of the token is stored in `sessions.token_hash`. The raw token
 // only lives in the HttpOnly cookie sent to the browser. Lookup is by hash.
 //
-// Expiry: 30 days from creation. Expired sessions are rejected by the
-// middleware and may be deleted lazily on miss.
+// Expiry layers (UNI-26):
+//   - Absolute ceiling — `expires_at` (30 days from creation, set at insert).
+//   - Absolute re-auth — even with continuous activity, sessions are forced
+//     to re-authenticate after `SESSION_ABSOLUTE_TIMEOUT_SECONDS` measured
+//     from `created_at` (default 12 hours).
+//   - Idle — if `now - last_activity_at` exceeds
+//     `SESSION_IDLE_TIMEOUT_SECONDS` (default 30 minutes) the session is
+//     invalidated on the next request.
+//
+// Expired / timed-out sessions are deleted lazily by the middleware and an
+// audit row (`session.revoked`, with the timeout reason) is written.
 
 import type { SessionUser, User, UserStatus } from "@university-hub/shared";
 
-import { execute, queryFirst, type Row } from "../db/index.js";
+import { execute, queryAll, queryFirst, type Row } from "../db/index.js";
+import type { Env } from "../env.js";
 
 const TOKEN_BYTES = 32;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+const DEFAULT_IDLE_TIMEOUT_SECONDS = 30 * 60;
+const DEFAULT_ABSOLUTE_TIMEOUT_SECONDS = 12 * 60 * 60;
+
+function intEnv(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function idleTimeoutSeconds(env: Env): number {
+  return intEnv(env.SESSION_IDLE_TIMEOUT_SECONDS, DEFAULT_IDLE_TIMEOUT_SECONDS);
+}
+
+export function absoluteTimeoutSeconds(env: Env): number {
+  return intEnv(
+    env.SESSION_ABSOLUTE_TIMEOUT_SECONDS,
+    DEFAULT_ABSOLUTE_TIMEOUT_SECONDS,
+  );
+}
 
 export type SessionRow = Row & {
   id: string;
   user_id: string;
   token_hash: string;
+  ip_address: string | null;
+  user_agent: string | null;
   expires_at: string;
   created_at: string;
+  last_activity_at: string;
 };
 
 export type UserRow = Row & {
@@ -37,8 +70,11 @@ type SessionWithUserRow = Row & {
   id: string;
   user_id: string;
   token_hash: string;
+  ip_address: string | null;
+  user_agent: string | null;
   expires_at: string;
   created_at: string;
+  last_activity_at: string;
   u_id: string;
   u_email: string;
   u_name: string;
@@ -94,11 +130,12 @@ export async function createSession(
   const token = generateSessionToken();
   const tokenHash = await hashSessionToken(token);
   const id = crypto.randomUUID();
-  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
   await execute(
     db,
-    `INSERT INTO sessions (id, user_id, token_hash, ip_address, user_agent, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO sessions (id, user_id, token_hash, ip_address, user_agent, expires_at, created_at, last_activity_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       input.userId,
@@ -106,6 +143,8 @@ export async function createSession(
       input.ipAddress ?? null,
       input.userAgent ?? null,
       expiresAt.toISOString(),
+      now.toISOString(),
+      now.toISOString(),
     ],
   );
   return { id, token, expiresAt };
@@ -125,7 +164,8 @@ export async function resolveSessionByToken(
   const tokenHash = await hashSessionToken(token);
   const row = await queryFirst<SessionWithUserRow>(
     db,
-    `SELECT s.id, s.user_id, s.token_hash, s.expires_at, s.created_at,
+    `SELECT s.id, s.user_id, s.token_hash, s.ip_address, s.user_agent,
+            s.expires_at, s.created_at, s.last_activity_at,
             u.id            AS u_id,
             u.email         AS u_email,
             u.name          AS u_name,
@@ -152,8 +192,11 @@ export async function resolveSessionByToken(
       id: row.id,
       user_id: row.user_id,
       token_hash: row.token_hash,
+      ip_address: row.ip_address,
+      user_agent: row.user_agent,
       expires_at: row.expires_at,
       created_at: row.created_at,
+      last_activity_at: row.last_activity_at ?? row.created_at,
     },
     user: {
       id: row.u_id,
@@ -177,6 +220,78 @@ export async function deleteSessionByToken(db: D1Database, token: string): Promi
 
 async function deleteSessionByHash(db: D1Database, tokenHash: string): Promise<void> {
   await execute(db, `DELETE FROM sessions WHERE token_hash = ?`, [tokenHash]);
+}
+
+/** Bump `last_activity_at` to `now` on the given session row. */
+export async function touchSessionActivity(
+  db: D1Database,
+  sessionId: string,
+  now: Date = new Date(),
+): Promise<void> {
+  await execute(
+    db,
+    `UPDATE sessions SET last_activity_at = ? WHERE id = ?`,
+    [now.toISOString(), sessionId],
+  );
+}
+
+export async function deleteSessionById(
+  db: D1Database,
+  sessionId: string,
+): Promise<void> {
+  await execute(db, `DELETE FROM sessions WHERE id = ?`, [sessionId]);
+}
+
+export interface RevokableSession {
+  id: string;
+  created_at: string;
+  last_activity_at: string;
+  ip_address: string | null;
+  user_agent: string | null;
+}
+
+/** All sessions for a user, newest activity first. Used by the settings UI
+ *  and by the role/status-change invalidation paths. */
+export async function listSessionsForUser(
+  db: D1Database,
+  userId: string,
+): Promise<RevokableSession[]> {
+  const rows = await queryAll<Row & RevokableSession>(
+    db,
+    `SELECT id, created_at, last_activity_at, ip_address, user_agent
+       FROM sessions
+      WHERE user_id = ?
+      ORDER BY last_activity_at DESC`,
+    [userId],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    created_at: r.created_at,
+    last_activity_at: r.last_activity_at ?? r.created_at,
+    ip_address: r.ip_address,
+    user_agent: r.user_agent,
+  }));
+}
+
+/**
+ * Revoke every session for a user, optionally keeping one (`exceptSessionId`).
+ * Returns the ids that were deleted so the caller can write per-session
+ * audit rows.
+ */
+export async function revokeAllSessionsForUser(
+  db: D1Database,
+  userId: string,
+  exceptSessionId?: string | null,
+): Promise<string[]> {
+  const sessions = await listSessionsForUser(db, userId);
+  const targets = exceptSessionId
+    ? sessions.filter((s) => s.id !== exceptSessionId)
+    : sessions;
+  if (targets.length === 0) return [];
+  for (const session of targets) {
+    await deleteSessionById(db, session.id);
+  }
+  return targets.map((s) => s.id);
 }
 
 export function toSessionUser(user: UserRow): SessionUser {

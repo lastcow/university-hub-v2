@@ -187,8 +187,11 @@ function ctx(actor: ActorFixture, db: ProgrammableD1, query = ""): RequestContex
       id: "s",
       user_id: actor.id,
       token_hash: "h",
+      ip_address: null,
+      user_agent: null,
       expires_at: "2099",
       created_at: "2026",
+      last_activity_at: "2026",
     },
   };
   return {

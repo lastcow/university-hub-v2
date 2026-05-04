@@ -408,6 +408,7 @@ describe("applyGenericLimit", () => {
           user_agent: null,
           expires_at: "2099-01-01T00:00:00Z",
           created_at: "",
+          last_activity_at: "",
         },
       },
     } as never;

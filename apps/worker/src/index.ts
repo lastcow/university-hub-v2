@@ -23,6 +23,11 @@ import {
 } from "./routes/mfa.js";
 import { handleBootstrapSuperAdmin } from "./routes/bootstrap.js";
 import { handleCreateContactMessage } from "./routes/contact.js";
+import {
+  handleListSessions,
+  handleRevokeAllOtherSessions,
+  handleRevokeSession,
+} from "./routes/sessions.js";
 import { handleListEmailLogs } from "./routes/email-logs.js";
 import {
   handleCreateCourse,
@@ -116,6 +121,7 @@ const TEACHER_ID_RE =
   /^\/api\/teachers\/([0-9a-fA-F-]{36})(?:\/(courses|students))?\/?$/;
 const TEACHER_ASSISTANT_ID_RE =
   /^\/api\/teacher-assistants\/([0-9a-fA-F-]{36})(?:\/(courses))?\/?$/;
+const SESSION_ID_RE = /^\/api\/auth\/sessions\/([0-9a-fA-F-]{36})\/?$/;
 
 export default {
   async fetch(request, env): Promise<Response> {
@@ -239,6 +245,22 @@ async function routeApi(
     }
     if (url.pathname === "/api/auth/mfa/disable" && request.method === "POST") {
       return handleMfaDisable(ctx);
+    }
+
+    // Active sessions surface (UNI-26). Static `/revoke-all` first so the
+    // id regex below doesn't try to parse it as a UUID.
+    if (url.pathname === "/api/auth/sessions" && request.method === "GET") {
+      return handleListSessions(ctx);
+    }
+    if (
+      url.pathname === "/api/auth/sessions/revoke-all" &&
+      request.method === "POST"
+    ) {
+      return handleRevokeAllOtherSessions(ctx);
+    }
+    const sessionMatch = SESSION_ID_RE.exec(url.pathname);
+    if (sessionMatch && request.method === "DELETE") {
+      return handleRevokeSession(ctx, sessionMatch[1] as string);
     }
 
     if (url.pathname === "/api/dashboard/summary" && request.method === "GET") {

@@ -185,8 +185,11 @@ function ctx(actor: UserFixture, db: ProgrammableD1, init?: { method?: string; b
       id: "s",
       user_id: actor.id,
       token_hash: "h",
+      ip_address: null,
+      user_agent: null,
       expires_at: "2099",
       created_at: "2026",
+      last_activity_at: "2026",
     },
   };
   return { request, env, url, cookies: {}, auth };
@@ -353,6 +356,62 @@ describe("PATCH /api/users/:id/role — privilege escalation guard", () => {
     expect(res.status).toBe(200);
     expect(db.updates("users").length).toBe(1);
   });
+
+  // UNI-26: role changes invalidate every existing session for the target so
+  // the new role takes effect on the very next request rather than waiting
+  // for the session cookie to expire.
+  it("revokes the target user's sessions when role changes and audits each one", async () => {
+    const db = makeDb();
+    const targetSessions = [
+      {
+        id: "11111111-1111-1111-1111-111111111111",
+        user_id: TARGET_STAFF_ID,
+        created_at: "2026-05-04T08:00:00.000Z",
+        last_activity_at: "2026-05-04T11:00:00.000Z",
+        ip_address: "203.0.113.10",
+        user_agent: "Mozilla/5.0",
+      },
+      {
+        id: "22222222-2222-2222-2222-222222222222",
+        user_id: TARGET_STAFF_ID,
+        created_at: "2026-05-04T09:00:00.000Z",
+        last_activity_at: "2026-05-04T10:00:00.000Z",
+        ip_address: "198.51.100.10",
+        user_agent: "Firefox",
+      },
+    ];
+    db.onAll((sql, params) => {
+      if (
+        sql.includes("FROM sessions") &&
+        sql.includes("WHERE user_id = ?") &&
+        sql.includes("ORDER BY last_activity_at DESC")
+      ) {
+        return params[0] === TARGET_STAFF_ID ? targetSessions : [];
+      }
+      return undefined;
+    });
+
+    const res = await handleUpdateUserRole(
+      ctx(USERS[SUPER_ADMIN_ID]!, db, { method: "PATCH", body: { role: "faculty" } }),
+      TARGET_STAFF_ID,
+    );
+    expect(res.status).toBe(200);
+
+    const deletes = db.executions
+      .filter((e) => /^DELETE FROM sessions/i.test(e.sql))
+      .map((e) => String(e.params[0]));
+    expect(deletes).toEqual(targetSessions.map((s) => s.id));
+
+    const sessionAudits = db
+      .inserts("audit_logs")
+      .filter((r) => r.params[3] === "session.revoked");
+    expect(sessionAudits).toHaveLength(2);
+    for (const row of sessionAudits) {
+      const meta = row.params[6] as string;
+      expect(meta).toContain('"reason":"role_change"');
+      expect(meta).toContain(TARGET_STAFF_ID);
+    }
+  });
 });
 
 describe("PATCH /api/users/:id/status — email + audit", () => {
@@ -407,6 +466,43 @@ describe("PATCH /api/users/:id/status — email + audit", () => {
     expect(denied.length).toBe(1);
     expect(db.updates("users").length).toBe(0);
     expect(db.inserts("email_logs").length).toBe(0);
+  });
+
+  it("revokes the target user's sessions when status changes and audits each one", async () => {
+    const db = makeDb();
+    const sessions = [
+      {
+        id: "33333333-3333-3333-3333-333333333333",
+        user_id: TARGET_STAFF_ID,
+        created_at: "2026-05-04T08:00:00.000Z",
+        last_activity_at: "2026-05-04T11:00:00.000Z",
+        ip_address: null,
+        user_agent: null,
+      },
+    ];
+    db.onAll((sql, params) => {
+      if (
+        sql.includes("FROM sessions") &&
+        sql.includes("WHERE user_id = ?") &&
+        sql.includes("ORDER BY last_activity_at DESC")
+      ) {
+        return params[0] === TARGET_STAFF_ID ? sessions : [];
+      }
+      return undefined;
+    });
+
+    const res = await handleUpdateUserStatus(
+      ctx(USERS[SUPER_ADMIN_ID]!, db, { method: "PATCH", body: { status: "suspended" } }),
+      TARGET_STAFF_ID,
+    );
+    expect(res.status).toBe(200);
+
+    const sessionAudits = db
+      .inserts("audit_logs")
+      .filter((r) => r.params[3] === "session.revoked");
+    expect(sessionAudits).toHaveLength(1);
+    const meta = sessionAudits[0]!.params[6] as string;
+    expect(meta).toContain('"reason":"status_change"');
   });
 
   it("rejects an actor changing their own status", async () => {

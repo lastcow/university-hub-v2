@@ -4,6 +4,7 @@ export const AUDIT_ACTIONS = [
   "auth.sign_in",
   "auth.sign_out",
   "auth.rate_limited",
+  "session.revoked",
   "invitation.created",
   "invitation.accepted",
   "invitation.revoked",
@@ -36,6 +37,7 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "auth.sign_in": "Sign in",
   "auth.sign_out": "Sign out",
   "auth.rate_limited": "Sign-in rate limited",
+  "session.revoked": "Session revoked",
   "invitation.created": "Invitation created",
   "invitation.accepted": "Invitation accepted",
   "invitation.revoked": "Invitation revoked",
@@ -71,6 +73,7 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
  */
 export type AuditActionCategory =
   | "auth"
+  | "session"
   | "invitation"
   | "user"
   | "university"

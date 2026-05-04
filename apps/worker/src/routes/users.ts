@@ -34,7 +34,7 @@ import {
   type UserStatusChangeResult,
 } from "@university-hub/shared";
 
-import type { UserRow } from "../auth/session.js";
+import { revokeAllSessionsForUser, type UserRow } from "../auth/session.js";
 import { execute, queryAll, queryFirst, type Row } from "../db/index.js";
 import {
   sendAccountStatusChangedEmail,
@@ -357,6 +357,17 @@ export async function handleUpdateUserRole(
     metadata: { previous_role: row.role, new_role: newRole },
   });
 
+  // Privilege change → invalidate every existing session for the target so
+  // the new role takes effect immediately instead of waiting for the cookie
+  // to expire (UNI-26). Applies to promotions and demotions alike.
+  await revokeUserSessionsAfterPrivilegeChange(ctx, {
+    targetUserId: userId,
+    targetUniversityId: row.university_id,
+    actorId: actor.id,
+    reason: "role_change",
+    metadata: { previous_role: row.role, new_role: newRole },
+  });
+
   const refreshed = await loadUserRow(ctx.env.DB, userId);
   return jsonOk(refreshed ? toUserListItem(refreshed) : { ...toUserListItem(row), role: newRole });
 }
@@ -446,6 +457,19 @@ export async function handleUpdateUserStatus(
     metadata: { previous_status: row.status, new_status: newStatus },
   });
 
+  // Status change → invalidate every existing session for the target so a
+  // suspended/inactive user can't keep operating on a still-warm cookie
+  // (UNI-26). The middleware would already 401 on `status !== "active"`,
+  // but deleting the rows tightens the loop and lets us emit per-session
+  // audit entries.
+  await revokeUserSessionsAfterPrivilegeChange(ctx, {
+    targetUserId: userId,
+    targetUniversityId: row.university_id,
+    actorId: actor.id,
+    reason: "status_change",
+    metadata: { previous_status: row.status, new_status: newStatus },
+  });
+
   // Email the user. Mailgun may be unconfigured in dev/prod (placeholder
   // secrets) — that surfaces as `email_status: failed`, the `email_logs` row
   // is still written by `dispatch()` in mail/index.ts, and the API response
@@ -506,4 +530,51 @@ async function recordEmailAudit(
 
 function describeFailure(result: Extract<SendResult, { ok: false }>): string {
   return result.detail ? `${result.reason}: ${result.detail}` : result.reason;
+}
+
+interface PrivilegeChangeRevokeInput {
+  targetUserId: string;
+  targetUniversityId: string | null;
+  actorId: string;
+  reason: "role_change" | "status_change";
+  metadata: Record<string, unknown>;
+}
+
+/**
+ * Drop every active session for `targetUserId` and write per-session
+ * `session.revoked` audit rows tagged with `reason`. Best-effort: a write
+ * failure is logged but the user's role/status change still goes through
+ * — the middleware would 401 the next request anyway and the auditor for
+ * this run already wrote the role/status audit row.
+ */
+async function revokeUserSessionsAfterPrivilegeChange(
+  ctx: RequestContext,
+  input: PrivilegeChangeRevokeInput,
+): Promise<void> {
+  try {
+    const revokedIds = await revokeAllSessionsForUser(
+      ctx.env.DB,
+      input.targetUserId,
+    );
+    for (const sessionId of revokedIds) {
+      await writeAuditLog(ctx.env.DB, {
+        action: "session.revoked",
+        actorUserId: input.actorId,
+        universityId: input.targetUniversityId,
+        entityType: "session",
+        entityId: sessionId,
+        metadata: {
+          reason: input.reason,
+          target_user_id: input.targetUserId,
+          ...input.metadata,
+        },
+      });
+    }
+  } catch (cause) {
+    console.error("session_revoke_after_privilege_change_failed", {
+      target_user_id: input.targetUserId,
+      reason: input.reason,
+      cause,
+    });
+  }
 }

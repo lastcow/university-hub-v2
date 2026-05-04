@@ -18,6 +18,14 @@ export interface Env {
   SESSION_COOKIE_NAME?: string;
   SESSION_SECRET?: string;
 
+  // Session lifecycle (UNI-26). Both default to spec values when unset:
+  //   - idle: 30 minutes — re-auth required if there's a gap longer than this
+  //     between authenticated requests.
+  //   - absolute: 12 hours — re-auth required even with continuous activity.
+  // Non-numeric or zero values fall back to the defaults.
+  SESSION_IDLE_TIMEOUT_SECONDS?: string;     // default 1800  (30 min)
+  SESSION_ABSOLUTE_TIMEOUT_SECONDS?: string; // default 43200 (12 h)
+
   // Cookie name for the short-lived "password verified, MFA pending"
   // challenge cookie issued by /api/auth/sign-in when a role requires MFA
   // (UNI-24). Defaults to "university_hub_mfa_challenge" if unset.

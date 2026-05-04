@@ -1285,8 +1285,11 @@ export function makeCtx(
       id: "test-session",
       user_id: actor.id,
       token_hash: "h",
+      ip_address: null,
+      user_agent: null,
       expires_at: "2099-01-01T00:00:00.000Z",
       created_at: TS,
+      last_activity_at: TS,
     },
   };
   return { request: new Request(url, requestInit), env, url, cookies: {}, auth };

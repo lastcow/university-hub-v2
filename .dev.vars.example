@@ -11,6 +11,13 @@ APP_BASE_URL=http://localhost:5173
 SESSION_COOKIE_NAME=university_hub_session
 SESSION_SECRET=replace-with-local-secret
 
+# Session lifecycle (UNI-26). Defaults apply when unset:
+#   SESSION_IDLE_TIMEOUT_SECONDS     30 min (1800)
+#   SESSION_ABSOLUTE_TIMEOUT_SECONDS 12 h   (43200)
+# Set explicitly to override; non-numeric or zero values fall back to defaults.
+# SESSION_IDLE_TIMEOUT_SECONDS=1800
+# SESSION_ABSOLUTE_TIMEOUT_SECONDS=43200
+
 MAILGUN_API_KEY=replace-with-mailgun-api-key
 MAILGUN_DOMAIN=replace-with-mailgun-domain
 MAILGUN_FROM_EMAIL=no-reply@example.com
