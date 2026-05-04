@@ -13,20 +13,27 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
   CheckCircle2,
+  ExternalLink,
+  FileText,
   KeyRound,
   Laptop,
   Lock,
   LogOut,
   Mail,
   Monitor,
+  Scale,
   ShieldCheck,
   ShieldAlert,
   University,
   UserCircle,
   XCircle,
 } from "lucide-react";
+import { Link } from "react-router-dom";
 
 import type {
+  LegalAdminDocument,
+  LegalAdminResponse,
+  LegalDocumentKind,
   MailgunStatusResponse,
   MailgunVarStatusEntry,
   MfaStatusResponse,
@@ -34,6 +41,7 @@ import type {
   SessionListResponse,
   University as UniversityType,
 } from "@university-hub/shared";
+import { LEGAL_DOCUMENT_KIND_LABELS } from "@university-hub/shared";
 
 import { useAuth } from "@/auth/AuthContext";
 import { Badge } from "@/components/ui/badge";
@@ -51,6 +59,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/use-toast";
 import { ApiClientError } from "@/lib/api";
+import { getLegalAdmin, updateLegalDocument } from "@/lib/legal";
 import {
   disableMfa,
   getMfaStatus,
@@ -173,11 +182,14 @@ export function SettingsPage() {
         onSaved={() => {
           void refresh();
         }}
+        userRole={user?.role ?? null}
       />
 
       <SecuritySection />
 
       <ActiveSessionsSection />
+
+      {canEditUniversity ? <LegalSection /> : null}
 
       <MailgunSection state={mailgun} />
     </div>
@@ -323,9 +335,11 @@ function UniversitySection({
 function AccountSection({
   currentName,
   onSaved,
+  userRole,
 }: {
   currentName: string;
   onSaved: () => void;
+  userRole: string | null;
 }) {
   const [name, setName] = useState(currentName);
   const [currentPassword, setCurrentPassword] = useState("");
@@ -520,6 +534,43 @@ function AccountSection({
             </Button>
           </div>
         </form>
+
+        <div className="mt-6 border-t pt-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Legal &amp; FERPA
+          </p>
+          <ul className="mt-2 space-y-1 text-sm">
+            <li>
+              <Link
+                to="/privacy"
+                className="inline-flex items-center gap-1.5 text-foreground hover:text-primary"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                Privacy Policy
+              </Link>
+            </li>
+            <li>
+              <Link
+                to="/terms"
+                className="inline-flex items-center gap-1.5 text-foreground hover:text-primary"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                Terms of Service
+              </Link>
+            </li>
+            {userRole ? (
+              <li>
+                <Link
+                  to={ferpaDisclosuresHrefForRole(userRole)}
+                  className="inline-flex items-center gap-1.5 text-foreground hover:text-primary"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  View FERPA-related disclosures about me
+                </Link>
+              </li>
+            ) : null}
+          </ul>
+        </div>
       </CardContent>
     </Card>
   );
@@ -1063,6 +1114,258 @@ function formatDuration(totalSeconds: number): string {
 }
 
 // ---------------------------------------------------------------------------
+// Legal admin (UNI-34) — Privacy Policy + ToS overrides per customer
+// ---------------------------------------------------------------------------
+
+interface LegalState {
+  status: LoadStatus;
+  data?: LegalAdminResponse;
+  error?: string;
+}
+
+const LEGAL_KINDS: LegalDocumentKind[] = ["terms", "privacy"];
+
+function LegalSection() {
+  const [state, setState] = useState<LegalState>({ status: "idle" });
+
+  const load = () => {
+    const controller = new AbortController();
+    setState((prev) => ({ ...prev, status: "loading" }));
+    getLegalAdmin(controller.signal)
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        setState({ status: "ok", data });
+      })
+      .catch((cause: unknown) => {
+        if (controller.signal.aborted) return;
+        setState({
+          status: "error",
+          error:
+            cause instanceof ApiClientError
+              ? cause.message
+              : "Could not load legal documents.",
+        });
+      });
+    return controller;
+  };
+
+  useEffect(() => {
+    const controller = load();
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function applyUpdate(kind: LegalDocumentKind, updated: LegalAdminDocument) {
+    setState((prev) => {
+      if (prev.status !== "ok" || !prev.data) return prev;
+      return {
+        ...prev,
+        data: {
+          ...prev.data,
+          documents: { ...prev.data.documents, [kind]: updated },
+        },
+      };
+    });
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Scale className="h-5 w-5 text-muted-foreground" />
+          <CardTitle>Legal</CardTitle>
+        </div>
+        <CardDescription>
+          Override the default Terms of Service and Privacy Policy for your
+          university. Changes are audit-logged. Bumping the version forces a
+          re-acceptance prompt on every user's next sign-in. Customers must
+          have their own counsel review before going live.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {state.status === "loading" || state.status === "idle" ? (
+          <div className="space-y-3">
+            <Skeleton className="h-9 w-full" />
+            <Skeleton className="h-32 w-full" />
+          </div>
+        ) : state.status === "error" ? (
+          <ErrorState
+            title="Couldn't load legal documents"
+            description={state.error}
+          />
+        ) : state.data ? (
+          <>
+            {state.data.contact_email ? (
+              <p className="text-xs text-muted-foreground">
+                Contact-email placeholder ({"{{contact_email}}"}) renders as{" "}
+                <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em]">
+                  {state.data.contact_email}
+                </code>
+                . University placeholder ({"{{university_name}}"}) renders as{" "}
+                <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em]">
+                  {state.data.university_name ?? "your university"}
+                </code>
+                .
+              </p>
+            ) : (
+              <p className="text-xs text-amber-700">
+                <strong>Heads up:</strong> the <code>SUPPORT_EMAIL</code>{" "}
+                environment variable is not set, so the {"{{contact_email}}"}{" "}
+                placeholder will render as a generic phrase. Configure it via
+                <code className="ml-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em]">
+                  wrangler secret put SUPPORT_EMAIL
+                </code>
+                .
+              </p>
+            )}
+            {LEGAL_KINDS.map((kind) => (
+              <LegalDocumentEditor
+                key={kind}
+                kind={kind}
+                document={state.data!.documents[kind]}
+                onUpdate={(updated) => applyUpdate(kind, updated)}
+              />
+            ))}
+          </>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function LegalDocumentEditor({
+  kind,
+  document: doc,
+  onUpdate,
+}: {
+  kind: LegalDocumentKind;
+  document: LegalAdminDocument;
+  onUpdate: (updated: LegalAdminDocument) => void;
+}) {
+  const [body, setBody] = useState(doc.body_md);
+  const [versionBump, setVersionBump] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setBody(doc.body_md);
+  }, [doc.body_md]);
+
+  const dirty = body !== doc.body_md;
+
+  async function onSave() {
+    setError(null);
+    setSaving(true);
+    try {
+      const updated = await updateLegalDocument(kind, {
+        body_md: body,
+        version_bump: versionBump,
+      });
+      toast({
+        title: `${LEGAL_DOCUMENT_KIND_LABELS[kind]} saved`,
+        description: versionBump
+          ? `Bumped to v${updated.version} — users will be asked to re-accept.`
+          : `Saved as v${updated.version} (silent edit, no re-acceptance).`,
+        variant: "success",
+      });
+      setVersionBump(false);
+      onUpdate(updated);
+    } catch (cause) {
+      setError(
+        cause instanceof ApiClientError
+          ? cause.message
+          : "Couldn't save changes. Please try again.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="rounded-md border border-border p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <FileText className="h-4 w-4 text-muted-foreground" />
+          <p className="text-sm font-medium">
+            {LEGAL_DOCUMENT_KIND_LABELS[kind]}
+          </p>
+          <Badge variant={doc.is_overridden ? "default" : "outline"}>
+            {doc.is_overridden ? `Custom · v${doc.version}` : `Default · v${doc.version}`}
+          </Badge>
+        </div>
+        <Link
+          to={`/${kind}`}
+          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-primary"
+        >
+          <ExternalLink className="h-3 w-3" /> Preview
+        </Link>
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Last updated{" "}
+        {new Date(doc.updated_at).toLocaleString()}
+        {doc.updated_by_name ? ` by ${doc.updated_by_name}` : ""}.
+      </p>
+
+      <div className="mt-3 space-y-2">
+        <Label htmlFor={`legal-${kind}-body`}>Markdown body</Label>
+        <textarea
+          id={`legal-${kind}-body`}
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          disabled={saving}
+          rows={14}
+          className="w-full resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-xs leading-6 shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          spellCheck="false"
+        />
+        <p className="text-xs text-muted-foreground">
+          Supports headings, paragraphs, bullet lists, links, and emphasis.
+          Placeholders {"{{university_name}}"} and {"{{contact_email}}"} are
+          rendered at display time.
+        </p>
+      </div>
+
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <label
+          htmlFor={`legal-${kind}-bump`}
+          className="flex items-start gap-2 text-xs text-foreground"
+        >
+          <input
+            id={`legal-${kind}-bump`}
+            type="checkbox"
+            checked={versionBump}
+            onChange={(e) => setVersionBump(e.target.checked)}
+            disabled={saving}
+            className="mt-0.5 h-4 w-4 shrink-0 rounded border-input text-primary focus:ring-2 focus:ring-ring focus:ring-offset-0"
+          />
+          <span className="leading-snug">
+            Bump version (forces all users to re-accept on next sign-in)
+          </span>
+        </label>
+        <div className="flex justify-end gap-2">
+          <Button
+            type="button"
+            onClick={onSave}
+            disabled={saving || !dirty}
+            size="sm"
+          >
+            {saving ? "Saving…" : "Save changes"}
+          </Button>
+        </div>
+      </div>
+
+      {error ? (
+        <div
+          role="alert"
+          className="mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
+          {error}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Mailgun status
 // ---------------------------------------------------------------------------
 
@@ -1153,6 +1456,14 @@ function StatusBadge({ status }: { status: "Configured" | "Missing configuration
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+function ferpaDisclosuresHrefForRole(role: string): string {
+  if (role === "student") return "/app/student/my-profile";
+  if (role === "super_admin" || role === "university_admin") {
+    return "/app/disclosures";
+  }
+  return "/app/disclosures";
+}
 
 function handleFormError(
   cause: unknown,

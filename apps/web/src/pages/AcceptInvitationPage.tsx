@@ -39,6 +39,7 @@ export function AcceptInvitationPage() {
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [termsAccepted, setTermsAccepted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -83,6 +84,12 @@ export function AcceptInvitationPage() {
       setFieldErrors({ confirmPassword: "Passwords do not match" });
       return;
     }
+    if (!termsAccepted) {
+      setFieldErrors({
+        terms_accepted: "You must agree to the Terms and Privacy Policy.",
+      });
+      return;
+    }
     setSubmitting(true);
     try {
       await acceptInvitation({
@@ -91,6 +98,7 @@ export function AcceptInvitationPage() {
         name: name.trim(),
         password,
         confirmPassword,
+        terms_accepted: true,
       });
       // Auto sign-in: backend set the cookie, hydrate AuthContext.
       await refresh();
@@ -290,6 +298,50 @@ export function AcceptInvitationPage() {
               ) : null}
             </div>
 
+            <div className="space-y-2 rounded-md border bg-muted/30 p-3">
+              <label
+                htmlFor="terms-accepted"
+                className="flex items-start gap-3 text-sm"
+              >
+                <input
+                  id="terms-accepted"
+                  type="checkbox"
+                  checked={termsAccepted}
+                  onChange={(e) => setTermsAccepted(e.target.checked)}
+                  disabled={submitting}
+                  required
+                  aria-invalid={fieldErrors.terms_accepted ? "true" : "false"}
+                  className="mt-1 h-4 w-4 shrink-0 rounded border-input text-primary focus:ring-2 focus:ring-ring focus:ring-offset-0"
+                />
+                <span className="leading-snug">
+                  I have read and agree to the{" "}
+                  <a
+                    href={`/terms${token ? `?token=${encodeURIComponent(token)}` : ""}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-medium underline underline-offset-2 hover:text-primary"
+                  >
+                    Terms of Service
+                  </a>{" "}
+                  and{" "}
+                  <a
+                    href={`/privacy${token ? `?token=${encodeURIComponent(token)}` : ""}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-medium underline underline-offset-2 hover:text-primary"
+                  >
+                    Privacy Policy
+                  </a>
+                  .
+                </span>
+              </label>
+              {fieldErrors.terms_accepted ? (
+                <p className="text-xs font-medium text-destructive">
+                  {fieldErrors.terms_accepted}
+                </p>
+              ) : null}
+            </div>
+
             {formError ? (
               <div
                 role="alert"
@@ -299,12 +351,16 @@ export function AcceptInvitationPage() {
               </div>
             ) : null}
 
-            <Button type="submit" className="w-full" disabled={submitting}>
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={submitting || !termsAccepted}
+            >
               {submitting ? "Creating account…" : "Create account & sign in"}
             </Button>
 
             <p className="text-center text-xs text-muted-foreground">
-              By accepting you agree to your university's terms of use.
+              Your acceptance is recorded with the document version.
             </p>
           </form>
         )}

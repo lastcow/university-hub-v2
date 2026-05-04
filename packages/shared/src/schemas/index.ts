@@ -10,3 +10,4 @@ export * from "./grade.js";
 export * from "./settings.js";
 export * from "./mfa.js";
 export * from "./disclosure.js";
+export * from "./legal.js";

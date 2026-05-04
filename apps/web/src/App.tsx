@@ -57,6 +57,7 @@ import { AboutPage } from "@/public/AboutPage";
 import { ContactPage } from "@/public/ContactPage";
 import { FeaturesPage } from "@/public/FeaturesPage";
 import { LandingPage } from "@/public/LandingPage";
+import { PrivacyPage, TermsPage } from "@/public/LegalPage";
 import { PublicLayout } from "@/public/PublicLayout";
 
 export default function App() {
@@ -157,6 +158,8 @@ export default function App() {
             <Route path="features" element={<FeaturesPage />} />
             <Route path="about" element={<AboutPage />} />
             <Route path="contact" element={<ContactPage />} />
+            <Route path="privacy" element={<PrivacyPage />} />
+            <Route path="terms" element={<TermsPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Route>
         </Routes>
