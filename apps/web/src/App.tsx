@@ -23,6 +23,7 @@ import { FacultyPage } from "@/pages/FacultyPage";
 import { GuestDashboardPage } from "@/pages/GuestDashboardPage";
 import { InvitationsPage } from "@/pages/InvitationsPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
+import { SettingsPage } from "@/pages/SettingsPage";
 import { SignInPage } from "@/pages/SignInPage";
 import { StudentDashboardPage } from "@/pages/StudentDashboardPage";
 import { StudentDetailPage } from "@/pages/StudentDetailPage";
@@ -120,6 +121,7 @@ export default function App() {
             <Route path="guest/dashboard" element={<GuestDashboardPage />} />
             <Route path="audit-logs" element={<AuditLogsPage />} />
             <Route path="email-logs" element={<EmailLogsPage />} />
+            <Route path="settings" element={<SettingsPage />} />
             <Route path="ux" element={<UxStatesPage />} />
             <Route path="access-denied" element={<AccessDeniedPage />} />
             <Route path="*" element={<NotFoundPage />} />
