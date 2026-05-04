@@ -9,7 +9,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { hashSessionToken } from "../../src/auth/session.js";
+import {
+  createSession,
+  hashSessionToken,
+  resolveSessionByToken,
+} from "../../src/auth/session.js";
 import type { Env } from "../../src/env.js";
 import {
   buildContext,
@@ -18,12 +22,14 @@ import {
 import { ProgrammableD1 } from "../helpers/programmable-d1.js";
 
 const SESSION_TOKEN = "session-token-fixture";
+const TEST_SESSION_SECRET = "test-session-secret-fixture";
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
     DB: undefined as unknown as D1Database,
     APP_ENV: "development",
     SESSION_COOKIE_NAME: "test_session",
+    SESSION_SECRET: TEST_SESSION_SECRET,
     ...overrides,
   };
 }
@@ -248,14 +254,135 @@ describe("buildContext() — idle + absolute timeouts", () => {
   });
 });
 
-// Light proof that the cookie hashing path is wired (we resolve sessions by
-// hash, not raw token). Not strictly part of UNI-26 but the new tests above
-// rely on the hash function being a pure helper, so a sanity check is cheap.
+// Cookie hashing path. The token_hash stored in D1 is HMAC-SHA-256 of the
+// raw token keyed by SESSION_SECRET (UNI-37); changing the secret changes
+// the output and is what gives operators a sign-everyone-out lever during
+// breach containment.
 describe("hashSessionToken()", () => {
-  it("emits a 64-char lowercase hex SHA-256", async () => {
-    const out = await hashSessionToken("hello");
+  it("emits a 64-char lowercase hex HMAC-SHA-256", async () => {
+    const out = await hashSessionToken("hello", TEST_SESSION_SECRET);
     expect(out).toHaveLength(64);
     expect(out).toMatch(/^[0-9a-f]+$/);
+  });
+
+  it("produces different output for the same token under a different secret", async () => {
+    const a = await hashSessionToken("hello", "secret-a");
+    const b = await hashSessionToken("hello", "secret-b");
+    expect(a).not.toBe(b);
+  });
+
+  it("is stable for the same (token, secret) pair", async () => {
+    const a = await hashSessionToken("hello", TEST_SESSION_SECRET);
+    const b = await hashSessionToken("hello", TEST_SESSION_SECRET);
+    expect(a).toBe(b);
+  });
+});
+
+describe("SESSION_SECRET wiring (UNI-37)", () => {
+  it("createSession refuses to mint when SESSION_SECRET is unset", async () => {
+    const db = new ProgrammableD1();
+    const env = makeEnv({
+      DB: db as unknown as D1Database,
+      SESSION_SECRET: undefined,
+    });
+    await expect(createSession(env, { userId: "user-1" })).rejects.toThrow(
+      /SESSION_SECRET/,
+    );
+    // Nothing should have been written.
+    expect(db.inserts("sessions").length).toBe(0);
+  });
+
+  it("createSession stores HMAC-keyed token_hash, not plain SHA-256", async () => {
+    const db = new ProgrammableD1();
+    const env = makeEnv({ DB: db as unknown as D1Database });
+
+    const created = await createSession(env, { userId: "user-1" });
+
+    const inserts = db.inserts("sessions");
+    expect(inserts.length).toBe(1);
+    const storedHash = String(inserts[0]!.params[2]);
+    const expectedHmac = await hashSessionToken(
+      created.token,
+      TEST_SESSION_SECRET,
+    );
+    expect(storedHash).toBe(expectedHmac);
+
+    // Make sure we are NOT storing the unkeyed SHA-256 (regression guard
+    // for the pre-UNI-37 behavior where the secret was dead weight).
+    const plainSha256 = await (async () => {
+      const data = new TextEncoder().encode(created.token);
+      const digest = await crypto.subtle.digest("SHA-256", data);
+      const arr = new Uint8Array(digest);
+      let out = "";
+      for (let i = 0; i < arr.length; i++) {
+        out += (arr[i] ?? 0).toString(16).padStart(2, "0");
+      }
+      return out;
+    })();
+    expect(storedHash).not.toBe(plainSha256);
+  });
+
+  it("rotating SESSION_SECRET invalidates outstanding sessions on resolve", async () => {
+    // The DB is keyed by token_hash. We seed a row produced under the
+    // *old* secret, then resolve the same raw token under the *new*
+    // secret — the lookup should miss, which is the runbook property.
+    const tokenInUse = "raw-token-fixture-abc";
+    const oldSecret = "old-secret-2025";
+    const newSecret = "rotated-secret-2026";
+    const oldHash = await hashSessionToken(tokenInUse, oldSecret);
+
+    const db = new ProgrammableD1();
+    db.onFirst((sql, params) => {
+      if (sql.includes("FROM sessions s") && sql.includes("JOIN users u")) {
+        // Only return the seeded row when the lookup hash matches the
+        // value derived under the OLD secret. Otherwise miss.
+        if (String(params[0]) === oldHash) {
+          return {
+            id: "session-1",
+            user_id: "user-1",
+            token_hash: oldHash,
+            ip_address: null,
+            user_agent: null,
+            expires_at: "2099-01-01T00:00:00.000Z",
+            created_at: "2026-05-04T11:00:00.000Z",
+            last_activity_at: "2026-05-04T11:00:00.000Z",
+            u_id: "user-1",
+            u_email: "u@example.com",
+            u_name: "U",
+            u_role: "staff",
+            u_status: "active",
+            u_university_id: null,
+            u_password_hash: "x",
+            u_last_sign_in_at: null,
+            u_created_at: "2026-05-04T11:00:00.000Z",
+            u_updated_at: "2026-05-04T11:00:00.000Z",
+          };
+        }
+        return undefined;
+      }
+      return undefined;
+    });
+
+    // Pre-rotation: same token under the old secret resolves.
+    const before = await resolveSessionByToken(
+      makeEnv({
+        DB: db as unknown as D1Database,
+        SESSION_SECRET: oldSecret,
+      }),
+      tokenInUse,
+    );
+    expect(before).not.toBeNull();
+    expect(before?.session.id).toBe("session-1");
+
+    // Post-rotation: same token under the new secret no longer resolves.
+    const after = await resolveSessionByToken(
+      makeEnv({
+        DB: db as unknown as D1Database,
+        SESSION_SECRET: newSecret,
+      }),
+      tokenInUse,
+    );
+    expect(after).toBeNull();
   });
 });
 

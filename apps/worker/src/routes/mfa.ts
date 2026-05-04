@@ -164,7 +164,7 @@ async function issueSessionForUser(
     ctx.request.headers.get("x-forwarded-for") ??
     null;
 
-  const created = await createSession(ctx.env.DB, {
+  const created = await createSession(ctx.env, {
     userId: user.id,
     ipAddress,
     userAgent,

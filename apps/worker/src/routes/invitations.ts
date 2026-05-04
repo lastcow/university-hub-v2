@@ -775,7 +775,7 @@ export async function handleAcceptInvitation(ctx: RequestContext): Promise<Respo
     ctx.request.headers.get("x-forwarded-for") ??
     null;
   const userAgent = ctx.request.headers.get("user-agent");
-  const created = await createSession(ctx.env.DB, {
+  const created = await createSession(ctx.env, {
     userId,
     ipAddress,
     userAgent,

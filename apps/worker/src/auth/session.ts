@@ -1,6 +1,14 @@
-// Session token lifecycle. Tokens are random bytes encoded base64url; only a
-// SHA-256 hash of the token is stored in `sessions.token_hash`. The raw token
-// only lives in the HttpOnly cookie sent to the browser. Lookup is by hash.
+// Session token lifecycle. Tokens are random bytes encoded base64url; only an
+// HMAC-SHA-256 of the token (keyed by `SESSION_SECRET`) is stored in
+// `sessions.token_hash`. The raw token only lives in the HttpOnly cookie sent
+// to the browser. Lookup is by HMAC.
+//
+// Why HMAC-keyed and not plain SHA-256 (UNI-37): keying the hash with
+// `SESSION_SECRET` means rotating the secret invalidates every existing
+// `sessions.token_hash` because none of them re-derive to the same hash
+// under the new key. That gives operators a second sign-everyone-out lever
+// during S0/S1 containment in addition to `DELETE FROM sessions`. The two
+// levers are independent and the runbook now uses both.
 //
 // Expiry layers (UNI-26):
 //   - Absolute ceiling — `expires_at` (30 days from creation, set at insert).
@@ -105,10 +113,44 @@ export function generateSessionToken(): string {
   return bytesToBase64Url(crypto.getRandomValues(new Uint8Array(TOKEN_BYTES)));
 }
 
-export async function hashSessionToken(token: string): Promise<string> {
+/**
+ * Resolve the session-signing key from the Worker env. We fail closed: if
+ * `SESSION_SECRET` is not configured the auth surface refuses to mint or
+ * resolve sessions rather than silently falling back to an unkeyed hash.
+ * The deploy / provisioning pipeline (`scripts/provision-university.mjs`,
+ * `docs/per-customer-provisioning.md`) sets this on first run.
+ */
+function getSessionSecret(env: Env): string {
+  const secret = env.SESSION_SECRET;
+  if (!secret) {
+    throw new Error(
+      "SESSION_SECRET is not configured; refusing to mint or resolve sessions.",
+    );
+  }
+  return secret;
+}
+
+/**
+ * HMAC-SHA-256 of `token` keyed by `secret`, hex-encoded. This is what gets
+ * stored in `sessions.token_hash`; the raw token never touches D1. Rotating
+ * the secret changes the output for the same input, which is exactly how
+ * rotation invalidates outstanding sessions during incident containment.
+ */
+export async function hashSessionToken(
+  token: string,
+  secret: string,
+): Promise<string> {
+  const keyMaterial = new TextEncoder().encode(secret);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    keyMaterial,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
   const data = new TextEncoder().encode(token);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return bytesToHex(new Uint8Array(digest));
+  const sig = await crypto.subtle.sign("HMAC", key, data);
+  return bytesToHex(new Uint8Array(sig));
 }
 
 export interface CreateSessionInput {
@@ -124,16 +166,16 @@ export interface CreatedSession {
 }
 
 export async function createSession(
-  db: D1Database,
+  env: Env,
   input: CreateSessionInput,
 ): Promise<CreatedSession> {
   const token = generateSessionToken();
-  const tokenHash = await hashSessionToken(token);
+  const tokenHash = await hashSessionToken(token, getSessionSecret(env));
   const id = crypto.randomUUID();
   const now = new Date();
   const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
   await execute(
-    db,
+    env.DB,
     `INSERT INTO sessions (id, user_id, token_hash, ip_address, user_agent, expires_at, created_at, last_activity_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
@@ -155,15 +197,18 @@ export interface ResolvedSession {
   user: UserRow;
 }
 
-/** Look up an active, non-expired session by raw token. Returns null otherwise. */
+/** Look up an active, non-expired session by raw token. Returns null otherwise.
+ *  After SESSION_SECRET rotation existing rows fail this lookup because the
+ *  raw token no longer re-derives to the same `token_hash` — that's the
+ *  rotation-invalidates-sessions property the runbook leans on. */
 export async function resolveSessionByToken(
-  db: D1Database,
+  env: Env,
   token: string,
 ): Promise<ResolvedSession | null> {
   if (!token) return null;
-  const tokenHash = await hashSessionToken(token);
+  const tokenHash = await hashSessionToken(token, getSessionSecret(env));
   const row = await queryFirst<SessionWithUserRow>(
-    db,
+    env.DB,
     `SELECT s.id, s.user_id, s.token_hash, s.ip_address, s.user_agent,
             s.expires_at, s.created_at, s.last_activity_at,
             u.id            AS u_id,
@@ -184,7 +229,7 @@ export async function resolveSessionByToken(
   );
   if (!row) return null;
   if (Date.parse(row.expires_at) <= Date.now()) {
-    await deleteSessionByHash(db, tokenHash);
+    await deleteSessionByHash(env.DB, tokenHash);
     return null;
   }
   return {
@@ -213,9 +258,9 @@ export async function resolveSessionByToken(
   };
 }
 
-export async function deleteSessionByToken(db: D1Database, token: string): Promise<void> {
+export async function deleteSessionByToken(env: Env, token: string): Promise<void> {
   if (!token) return;
-  await deleteSessionByHash(db, await hashSessionToken(token));
+  await deleteSessionByHash(env.DB, await hashSessionToken(token, getSessionSecret(env)));
 }
 
 async function deleteSessionByHash(db: D1Database, tokenHash: string): Promise<void> {

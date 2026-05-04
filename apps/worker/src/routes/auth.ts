@@ -158,7 +158,7 @@ export async function handleSignIn(ctx: RequestContext): Promise<Response> {
     ctx.request.headers.get("x-forwarded-for") ??
     null;
 
-  const created = await createSession(ctx.env.DB, {
+  const created = await createSession(ctx.env, {
     userId: user.id,
     ipAddress,
     userAgent,
@@ -197,7 +197,7 @@ export async function handleSignOut(ctx: RequestContext): Promise<Response> {
   const actor = ctx.auth?.user ?? null;
 
   if (token) {
-    await deleteSessionByToken(ctx.env.DB, token);
+    await deleteSessionByToken(ctx.env, token);
   }
 
   if (actor) {
