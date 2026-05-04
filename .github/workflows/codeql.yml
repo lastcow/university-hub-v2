@@ -1,0 +1,54 @@
+# CodeQL static analysis — UNI-29.
+#
+# Runs the default JavaScript/TypeScript query suite against every PR
+# touching code, every push to main, and weekly to catch new queries
+# published by the CodeQL team. Findings appear under the GitHub
+# Security → Code scanning tab.
+
+name: codeql
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Weekly Monday 04:00 UTC — picks up new CodeQL queries published since
+    # the last PR/push run.
+    - cron: "0 4 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # `javascript-typescript` covers both languages in a single run on
+        # the modern CodeQL action.
+        language: [javascript-typescript]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+
+      # No build step needed — JS/TS is analyzed directly from source.
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

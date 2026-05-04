@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# pre-commit — UNI-29 secret-scan gate.
+#
+# Greps the staged diff for common secret prefixes and aborts the commit if
+# any are found. This is a defense-in-depth check on top of GitHub's
+# built-in secret scanning (which catches things post-push); the goal is
+# to stop a leaked credential before it ever reaches the remote.
+#
+# Activated by `git config core.hooksPath scripts/git-hooks`, which the
+# repo's `npm install` runs via the `postinstall` script (see
+# scripts/setup-git-hooks.mjs).
+#
+# Bypass: `SKIP_SECRET_SCAN=1 git commit ...` — only for files that are
+# legitimately allowed to contain a secret-shaped string (test fixtures,
+# documentation examples). The user accepts the risk.
+
+set -eu
+
+if [ "${SKIP_SECRET_SCAN:-}" = "1" ]; then
+  exec >&2 echo "pre-commit: SKIP_SECRET_SCAN=1 set, skipping secret scan."
+  exit 0
+fi
+
+# Patterns. Keep tight enough to avoid false positives on prose; tight
+# enough to catch the credential families we actually use.
+#
+# Each pattern is `name|regex`. The regex is fed to `grep -E`.
+PATTERNS=(
+  'AWS Access Key|\bAKIA[0-9A-Z]{16}\b'
+  'AWS Secret Key|aws(.{0,20})?(secret|key)(.{0,5})?[=:]\s*"?[A-Za-z0-9/+=]{40}"?'
+  'Mailgun key|\bkey-[0-9a-f]{32}\b'
+  'Mailgun namespaced key|\bmailgun_[A-Za-z0-9_-]{20,}'
+  'Stripe live secret|\bsk_live_[0-9a-zA-Z]{24,}'
+  'Stripe live publishable|\bpk_live_[0-9a-zA-Z]{24,}'
+  'Stripe restricted|\brk_live_[0-9a-zA-Z]{24,}'
+  'GitHub PAT|\bghp_[0-9A-Za-z]{36}\b'
+  'GitHub fine-grained PAT|\bgithub_pat_[0-9A-Za-z_]{82}\b'
+  'GitHub OAuth/server token|\bgho_[0-9A-Za-z]{36}\b'
+  'GitHub user-to-server|\bghu_[0-9A-Za-z]{36}\b'
+  'GitHub server-to-server|\bghs_[0-9A-Za-z]{36}\b'
+  'GitHub refresh token|\bghr_[0-9A-Za-z]{36}\b'
+  'Slack token|\bxox[abprs]-[0-9A-Za-z-]{10,}\b'
+  'Google API key|\bAIza[0-9A-Za-z_-]{35}\b'
+  'Cloudflare API token|\bcf_[A-Za-z0-9_-]{40,}\b'
+  'OpenAI API key|\bsk-[A-Za-z0-9]{20,}\b'
+  'Anthropic API key|\bsk-ant-[A-Za-z0-9_-]{40,}\b'
+  'Generic private key block|-----BEGIN (RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----'
+  'JWT (3 base64 segments)|\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b'
+)
+
+# Files staged for commit, excluding deletions. We diff against the index,
+# not the working tree, so the user only gets caught for what they're
+# actually about to commit.
+mapfile -t STAGED < <(git diff --cached --name-only --diff-filter=ACMRTUXB)
+
+if [ ${#STAGED[@]} -eq 0 ]; then
+  exit 0
+fi
+
+# Skip the lockfile (massive, never carries secrets but huge and slow), and
+# this hook itself (its `PATTERNS` array would match every commit that
+# updates the patterns).
+SKIP_REGEX='^(package-lock\.json|scripts/git-hooks/pre-commit)$'
+
+FOUND=0
+for f in "${STAGED[@]}"; do
+  [ -f "$f" ] || continue
+  if [[ "$f" =~ $SKIP_REGEX ]]; then
+    continue
+  fi
+  for entry in "${PATTERNS[@]}"; do
+    name="${entry%%|*}"
+    regex="${entry#*|}"
+    if matches=$(grep -EnH "$regex" -- "$f" 2>/dev/null); then
+      if [ "$FOUND" = 0 ]; then
+        echo "pre-commit: refusing to commit — possible secrets detected." >&2
+        echo >&2
+      fi
+      FOUND=1
+      echo "  [$name] in $f" >&2
+      echo "$matches" | sed 's/^/    /' >&2
+    fi
+  done
+done
+
+if [ "$FOUND" = 1 ]; then
+  cat >&2 <<'EOF'
+
+If this is a real credential:
+  - Rotate it now (do NOT just remove it from the diff — assume it leaked).
+  - Then unstage the file and re-commit.
+If this is a false positive (test fixture, documentation example, etc.):
+  - Run with SKIP_SECRET_SCAN=1 git commit ... and explain in the commit message.
+See docs/security-ci.md for triage details.
+EOF
+  exit 1
+fi
+
+exit 0

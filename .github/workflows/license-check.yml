@@ -1,0 +1,53 @@
+# License compatibility gate — UNI-29.
+#
+# Runs scripts/license-check.mjs, which wraps `license-checker-rseidelsohn`
+# against the production dependency tree and fails on any package whose
+# license is not on the workspace allowlist (MIT / Apache-2.0 / BSD-* /
+# ISC / Unlicense + a handful of permissive equivalents — see the script
+# for the canonical list).
+#
+# Allowlist rationale and triage flow live in docs/security-ci.md.
+
+name: license-check
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "**/package.json"
+      - "package-lock.json"
+      - "scripts/license-check.mjs"
+      - ".github/workflows/license-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/package.json"
+      - "package-lock.json"
+      - "scripts/license-check.mjs"
+      - ".github/workflows/license-check.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: license-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run license-check
+        run: node scripts/license-check.mjs

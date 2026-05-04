@@ -1,0 +1,47 @@
+# npm audit gate — UNI-29.
+#
+# Runs scripts/audit-gate.mjs on PRs and main pushes. The script wraps
+# `npm audit --audit-level=high` and fails on any unsuppressed high/critical
+# advisory. Suppressions live in .audit-ignore at the repo root and require a
+# justification comment.
+#
+# A scheduled daily run keeps us honest against newly published advisories
+# even when no PR is in flight.
+
+name: security-audit
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # 03:30 UTC daily — picks up overnight advisory disclosures. Drift is
+    # acceptable for an advisory check.
+    - cron: "30 3 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit gate
+        run: node scripts/audit-gate.mjs
