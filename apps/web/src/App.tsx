@@ -6,7 +6,15 @@ import { ProtectedRoute } from "@/auth/ProtectedRoute";
 import { Toaster } from "@/components/ui/toaster";
 import { AcceptInvitationPage } from "@/pages/AcceptInvitationPage";
 import { AccessDeniedPage } from "@/pages/AccessDeniedPage";
+import { CourseDetailPage } from "@/pages/CourseDetailPage";
+import { CourseEditPage } from "@/pages/CourseEditPage";
+import { CourseNewPage } from "@/pages/CourseNewPage";
+import { CoursesPage } from "@/pages/CoursesPage";
 import { DashboardPage } from "@/pages/DashboardPage";
+import { DepartmentDetailPage } from "@/pages/DepartmentDetailPage";
+import { DepartmentEditPage } from "@/pages/DepartmentEditPage";
+import { DepartmentNewPage } from "@/pages/DepartmentNewPage";
+import { DepartmentsPage } from "@/pages/DepartmentsPage";
 import { InvitationsPage } from "@/pages/InvitationsPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { SignInPage } from "@/pages/SignInPage";
@@ -47,6 +55,14 @@ export default function App() {
             <Route path="universities/:id/edit" element={<UniversityEditPage />} />
             <Route path="users" element={<UsersPage />} />
             <Route path="users/:id" element={<UserDetailPage />} />
+            <Route path="departments" element={<DepartmentsPage />} />
+            <Route path="departments/new" element={<DepartmentNewPage />} />
+            <Route path="departments/:id" element={<DepartmentDetailPage />} />
+            <Route path="departments/:id/edit" element={<DepartmentEditPage />} />
+            <Route path="courses" element={<CoursesPage />} />
+            <Route path="courses/new" element={<CourseNewPage />} />
+            <Route path="courses/:id" element={<CourseDetailPage />} />
+            <Route path="courses/:id/edit" element={<CourseEditPage />} />
             <Route path="ux" element={<UxStatesPage />} />
             <Route path="access-denied" element={<AccessDeniedPage />} />
             <Route path="*" element={<NotFoundPage />} />

@@ -3,6 +3,7 @@ import type {
   COURSE_STATUSES,
 } from "../constants/statuses.js";
 import type { Id, IsoDateString } from "./common.js";
+import type { Role } from "./role.js";
 
 export type CourseStatus = (typeof COURSE_STATUSES)[number];
 
@@ -20,6 +21,13 @@ export interface Course {
   updated_at: IsoDateString;
 }
 
+/** `Course` row enriched for table rendering. */
+export interface CourseListItem extends Course {
+  university_name: string | null;
+  department_name: string | null;
+  assignment_count: number;
+}
+
 export interface CourseAssignment {
   id: Id;
   course_id: Id;
@@ -27,4 +35,11 @@ export interface CourseAssignment {
   role: CourseAssignmentRole;
   created_at: IsoDateString;
   updated_at: IsoDateString;
+}
+
+/** `CourseAssignment` enriched with the user's display fields. */
+export interface CourseAssignmentListItem extends CourseAssignment {
+  user_name: string;
+  user_email: string;
+  user_role: Role;
 }

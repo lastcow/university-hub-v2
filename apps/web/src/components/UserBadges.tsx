@@ -3,7 +3,10 @@
 // "Teacher Assistant" everywhere.
 
 import {
+  COURSE_ASSIGNMENT_ROLE_LABELS,
   ROLE_LABELS,
+  type CourseAssignmentRole,
+  type CourseStatus,
   type Role,
   type UniversityStatus,
   type UserStatus,
@@ -65,6 +68,46 @@ export function UniversityStatusBadge({ status }: { status: UniversityStatus }) 
   return (
     <Badge variant={UNIVERSITY_STATUS_VARIANTS[status]}>
       {UNIVERSITY_STATUS_LABELS[status]}
+    </Badge>
+  );
+}
+
+const COURSE_STATUS_LABELS: Record<CourseStatus, string> = {
+  active: "Active",
+  inactive: "Inactive",
+  archived: "Archived",
+};
+
+const COURSE_STATUS_VARIANTS: Record<CourseStatus, BadgeProps["variant"]> = {
+  active: "success",
+  inactive: "outline",
+  archived: "destructive",
+};
+
+export function CourseStatusBadge({ status }: { status: CourseStatus }) {
+  return (
+    <Badge variant={COURSE_STATUS_VARIANTS[status]}>
+      {COURSE_STATUS_LABELS[status]}
+    </Badge>
+  );
+}
+
+const COURSE_ASSIGNMENT_ROLE_VARIANTS: Record<CourseAssignmentRole, BadgeProps["variant"]> = {
+  faculty: "default",
+  teacher: "default",
+  teacher_assistant: "secondary",
+  student: "outline",
+  viewer: "outline",
+};
+
+export function CourseAssignmentRoleBadge({
+  role,
+}: {
+  role: CourseAssignmentRole;
+}) {
+  return (
+    <Badge variant={COURSE_ASSIGNMENT_ROLE_VARIANTS[role]}>
+      {COURSE_ASSIGNMENT_ROLE_LABELS[role]}
     </Badge>
   );
 }
