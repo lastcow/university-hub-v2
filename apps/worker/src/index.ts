@@ -4,6 +4,7 @@ import type { Env } from "./env.js";
 import { buildContext } from "./middleware/auth.js";
 import { handleListAuditLogs } from "./routes/audit-logs.js";
 import { handleMe, handleSignIn, handleSignOut } from "./routes/auth.js";
+import { handleBootstrapSuperAdmin } from "./routes/bootstrap.js";
 import { handleCreateContactMessage } from "./routes/contact.js";
 import { handleListEmailLogs } from "./routes/email-logs.js";
 import {
@@ -115,6 +116,16 @@ export default {
         timestamp: new Date().toISOString(),
       };
       return jsonOk(body);
+    }
+
+    // Production bootstrap (UNI-16). Disabled (returns 404) unless
+    // BOOTSTRAP_SECRET is set; the endpoint also self-disables once any
+    // super_admin row exists. See routes/bootstrap.ts for the full gate.
+    if (
+      url.pathname === "/api/bootstrap/super-admin" &&
+      request.method === "POST"
+    ) {
+      return handleBootstrapSuperAdmin(ctx);
     }
 
     if (url.pathname === "/api/auth/sign-in" && request.method === "POST") {

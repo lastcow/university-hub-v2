@@ -14,3 +14,10 @@ MAILGUN_REGION=US
 # Where /api/contact notifications are delivered (set this to a real inbox in
 # production). Falls back to MAILGUN_FROM_EMAIL when unset.
 SUPPORT_EMAIL=support@example.com
+
+# Production bootstrap (UNI-16). Leave UNSET in dev — the dev seed migration
+# already creates a super_admin (`superadmin@dev.local`). In production, set
+# this to a long random secret with `wrangler secret put BOOTSTRAP_SECRET`,
+# run `npm run bootstrap:admin -- --url=... --email=...`, and then delete the
+# secret with `wrangler secret delete BOOTSTRAP_SECRET`. See docs/auth.md.
+# BOOTSTRAP_SECRET=replace-with-bootstrap-secret

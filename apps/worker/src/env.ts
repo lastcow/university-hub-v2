@@ -23,6 +23,14 @@ export interface Env {
   MAILGUN_REGION?: string;
 
   SUPPORT_EMAIL?: string;
+
+  // Production bootstrap (UNI-16). When set, `POST /api/bootstrap/super-admin`
+  // accepts an `Authorization: Bearer <BOOTSTRAP_SECRET>` request to create
+  // the very first super_admin. The endpoint is auto-disabled once any
+  // super_admin row exists, so the secret only confers one-shot capability;
+  // unset the secret with `wrangler secret delete BOOTSTRAP_SECRET` after
+  // bootstrap as defense in depth.
+  BOOTSTRAP_SECRET?: string;
 }
 
 export function isProduction(env: Env): boolean {
