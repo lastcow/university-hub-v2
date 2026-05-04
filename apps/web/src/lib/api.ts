@@ -34,7 +34,13 @@ interface InternalRequestOptions extends ApiRequestOptions {
   body?: unknown;
 }
 
-const DEFAULT_BASE_URL = "";
+// In production the SPA ships from Cloudflare Pages and the API lives on a
+// different host (the Worker), so the API client prefixes every request with
+// `VITE_API_BASE_URL`. In dev the var is unset and we fall back to relative
+// `/api/...` paths, which the Vite dev server proxies to the local Worker
+// (see vite.config.ts).
+const DEFAULT_BASE_URL =
+  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? "";
 
 function buildUrl(
   baseUrl: string,

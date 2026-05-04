@@ -36,7 +36,6 @@ import {
 } from "../auth/invitation-token.js";
 import { createSession, toSessionUser, type UserRow } from "../auth/session.js";
 import { execute, queryAll, queryFirst, type Row } from "../db/index.js";
-import { isProduction } from "../env.js";
 import {
   sendInvitationEmail,
   sendInvitationResentEmail,
@@ -45,7 +44,7 @@ import {
 } from "../mail/index.js";
 import { requireAuth, type RequestContext } from "../middleware/auth.js";
 import { writeAuditLog } from "../services/audit.js";
-import { buildSetCookie } from "../utils/cookies.js";
+import { buildSessionSetCookie } from "../utils/cookies.js";
 import { errorResponse, jsonOk } from "../utils/responses.js";
 
 // ---------------------------------------------------------------------------
@@ -750,13 +749,10 @@ export async function handleAcceptInvitation(ctx: RequestContext): Promise<Respo
   );
 
   const cookieName = ctx.env.SESSION_COOKIE_NAME || "university_hub_session";
-  const setCookie = buildSetCookie({
+  const setCookie = buildSessionSetCookie(ctx.env, {
     name: cookieName,
     value: created.token,
     expires: created.expiresAt,
-    secure: isProduction(ctx.env),
-    httpOnly: true,
-    sameSite: "Lax",
   });
 
   const body: InvitationAcceptResult = {

@@ -20,10 +20,12 @@ import {
   type UserRow,
 } from "../auth/session.js";
 import { execute, queryFirst } from "../db/index.js";
-import { isProduction } from "../env.js";
 import type { RequestContext } from "../middleware/auth.js";
 import { writeAuditLog } from "../services/audit.js";
-import { buildClearCookie, buildSetCookie } from "../utils/cookies.js";
+import {
+  buildSessionClearCookie,
+  buildSessionSetCookie,
+} from "../utils/cookies.js";
 import { errorResponse, jsonOk } from "../utils/responses.js";
 
 const MIN_PASSWORD_LENGTH = 8;
@@ -110,13 +112,10 @@ export async function handleSignIn(ctx: RequestContext): Promise<Response> {
 
   const sessionUser: SessionUser = toSessionUser(user);
 
-  const setCookie = buildSetCookie({
+  const setCookie = buildSessionSetCookie(ctx.env, {
     name: sessionCookieName(ctx),
     value: created.token,
     expires: created.expiresAt,
-    secure: isProduction(ctx.env),
-    httpOnly: true,
-    sameSite: "Lax",
   });
 
   return jsonOk(sessionUser, {
@@ -143,7 +142,7 @@ export async function handleSignOut(ctx: RequestContext): Promise<Response> {
     });
   }
 
-  const clear = buildClearCookie(cookieName, { secure: isProduction(ctx.env) });
+  const clear = buildSessionClearCookie(ctx.env, cookieName);
   return jsonOk({ ok: true } as const, { headers: { "set-cookie": clear } });
 }
 

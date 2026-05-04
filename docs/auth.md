@@ -37,8 +37,14 @@ body: { email, password }
 9. `audit_logs` row written: `action = auth.sign_in`,
    `actor_user_id = users.id`.
 10. Response: `200 { ok: true, data: SessionUser }` + `Set-Cookie:
-    university_hub_session=<raw-token>; HttpOnly; SameSite=Lax;
-    [Secure when APP_ENV != development]`.
+    university_hub_session=<raw-token>; HttpOnly; <SameSite/Secure as below>`.
+
+    The cookie attributes are picked by `sessionCookieAttributes()` in
+    `apps/worker/src/utils/cookies.ts`. In production (`APP_ENV !=
+    development`) the cookie is `SameSite=None; Secure` because the SPA
+    on Cloudflare Pages is cross-site to the Worker. In dev (`APP_ENV =
+    development`) the cookie is `SameSite=Lax` and the `Secure` flag is
+    dropped so http://localhost sign-in still works without HTTPS.
 
 `SessionUser` deliberately excludes `password_hash` and any other secret —
 the shape is enforced by `toSessionUser()` in `apps/worker/src/auth/session.ts`.
@@ -93,7 +99,7 @@ node scripts/hash-password.mjs '<password>'
 | Token encoding (cookie)  | base64url, no padding                                  |
 | Token storage (DB)       | SHA-256 hex of the raw token (no plaintext)            |
 | Cookie name              | `SESSION_COOKIE_NAME` env (default `university_hub_session`) |
-| Cookie attributes        | `HttpOnly; SameSite=Lax; Path=/; Secure` (prod)        |
+| Cookie attributes        | `HttpOnly; SameSite=None; Secure; Path=/` (prod, cross-site to Pages); `HttpOnly; SameSite=Lax; Path=/` (dev, no Secure for localhost) |
 | Lifetime                 | 30 days from creation                                  |
 | Renewal                  | None — sign-in mints a fresh row each time             |
 | Expiry handling          | Middleware deletes the row lazily on lookup miss        |
@@ -295,8 +301,15 @@ Read the audit log via `GET /api/audit-logs` (`super_admin`,
       plaintext.
 - [x] Session tokens hashed (SHA-256) before persistence; raw tokens only
       live in the HttpOnly cookie.
-- [x] Cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` in production
-      (anything with `APP_ENV != development`).
+- [x] Cookies are `HttpOnly` everywhere. Production (`APP_ENV !=
+      development`) uses `SameSite=None; Secure` because the SPA on
+      Cloudflare Pages is cross-site to the Worker; dev uses
+      `SameSite=Lax` without `Secure` so http://localhost sign-in works.
+- [x] CORS allowlist is driven by the `ALLOWED_WEB_ORIGINS` Worker var;
+      disallowed origins receive no `Access-Control-Allow-*` headers, so
+      the browser blocks the response. The Worker never returns `*` for
+      `Access-Control-Allow-Origin` (it always echoes a single matched
+      origin) because cross-site fetches use `credentials: 'include'`.
 - [x] Wrong-email and wrong-password collapse to the same generic 401.
 - [x] Invitation tokens are single-use; expired / accepted / revoked
       invitations always reject.
