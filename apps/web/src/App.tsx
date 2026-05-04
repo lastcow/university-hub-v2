@@ -9,6 +9,11 @@ import { DashboardPage } from "@/pages/DashboardPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { SignInPage } from "@/pages/SignInPage";
 import { UxStatesPage } from "@/pages/UxStatesPage";
+import { AboutPage } from "@/public/AboutPage";
+import { ContactPage } from "@/public/ContactPage";
+import { FeaturesPage } from "@/public/FeaturesPage";
+import { LandingPage } from "@/public/LandingPage";
+import { PublicLayout } from "@/public/PublicLayout";
 
 export default function App() {
   return (
@@ -30,7 +35,13 @@ export default function App() {
             <Route path="access-denied" element={<AccessDeniedPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Route>
-          <Route path="*" element={<Navigate to="/app/dashboard" replace />} />
+          <Route element={<PublicLayout />}>
+            <Route index element={<LandingPage />} />
+            <Route path="features" element={<FeaturesPage />} />
+            <Route path="about" element={<AboutPage />} />
+            <Route path="contact" element={<ContactPage />} />
+            <Route path="*" element={<NotFoundPage />} />
+          </Route>
         </Routes>
         <Toaster />
       </AuthProvider>
