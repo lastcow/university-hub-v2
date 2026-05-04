@@ -36,6 +36,17 @@ export const COURSE_ASSIGNMENT_ROLES = [
   "viewer",
 ] as const;
 
+export const COURSE_ASSIGNMENT_ROLE_LABELS: Record<
+  (typeof COURSE_ASSIGNMENT_ROLES)[number],
+  string
+> = {
+  faculty: "Faculty",
+  teacher: "Teacher",
+  teacher_assistant: "Teacher Assistant",
+  student: "Student",
+  viewer: "Viewer",
+};
+
 export const EMAIL_TYPES = [
   "invitation",
   "invitation_resend",

@@ -470,8 +470,8 @@ export function DashboardPage() {
         </TabsContent>
         <TabsContent value="academic">
           <EmptyState
-            title="No academic data yet"
-            description="Departments, courses, and rosters land in UNI-13."
+            title="Manage academic structure"
+            description="Departments and courses ship in UNI-12. Student / faculty / teacher / TA directories land in UNI-13."
           />
         </TabsContent>
         <TabsContent value="invitations">

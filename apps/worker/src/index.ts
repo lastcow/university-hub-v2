@@ -4,7 +4,24 @@ import type { Env } from "./env.js";
 import { buildContext } from "./middleware/auth.js";
 import { handleMe, handleSignIn, handleSignOut } from "./routes/auth.js";
 import { handleCreateContactMessage } from "./routes/contact.js";
+import {
+  handleCreateCourse,
+  handleCreateCourseAssignment,
+  handleDeleteCourse,
+  handleDeleteCourseAssignment,
+  handleGetCourse,
+  handleListCourseAssignments,
+  handleListCourses,
+  handleUpdateCourse,
+} from "./routes/courses.js";
 import { handleDashboardSummary } from "./routes/dashboard.js";
+import {
+  handleCreateDepartment,
+  handleDeleteDepartment,
+  handleGetDepartment,
+  handleListDepartments,
+  handleUpdateDepartment,
+} from "./routes/departments.js";
 import {
   handleAcceptInvitation,
   handleCreateInvitation,
@@ -35,6 +52,10 @@ const INVITATION_ID_RE =
   /^\/api\/invitations\/([0-9a-fA-F-]{36})(?:\/(revoke|resend))?\/?$/;
 const UNIVERSITY_ID_RE = /^\/api\/universities\/([0-9a-fA-F-]{36})\/?$/;
 const USER_ID_RE = /^\/api\/users\/([0-9a-fA-F-]{36})(?:\/(role|status))?\/?$/;
+const DEPARTMENT_ID_RE = /^\/api\/departments\/([0-9a-fA-F-]{36})\/?$/;
+const COURSE_ID_RE = /^\/api\/courses\/([0-9a-fA-F-]{36})\/?$/;
+const COURSE_ASSIGNMENT_RE =
+  /^\/api\/courses\/([0-9a-fA-F-]{36})\/assignments(?:\/([0-9a-fA-F-]{36}))?\/?$/;
 
 export default {
   async fetch(request, env): Promise<Response> {
@@ -139,6 +160,63 @@ export default {
       }
       if (sub === "status" && request.method === "PATCH") {
         return handleUpdateUserStatus(ctx, userId);
+      }
+    }
+
+    // Departments CRUD (UNI-12)
+    if (url.pathname === "/api/departments" && request.method === "GET") {
+      return handleListDepartments(ctx);
+    }
+    if (url.pathname === "/api/departments" && request.method === "POST") {
+      return handleCreateDepartment(ctx);
+    }
+    const deptMatch = DEPARTMENT_ID_RE.exec(url.pathname);
+    if (deptMatch) {
+      const departmentId = deptMatch[1] as string;
+      if (request.method === "GET") {
+        return handleGetDepartment(ctx, departmentId);
+      }
+      if (request.method === "PATCH") {
+        return handleUpdateDepartment(ctx, departmentId);
+      }
+      if (request.method === "DELETE") {
+        return handleDeleteDepartment(ctx, departmentId);
+      }
+    }
+
+    // Courses CRUD + assignments (UNI-12). Match the assignments routes first
+    // so the bare-id regex doesn't try to swallow `/assignments` paths.
+    if (url.pathname === "/api/courses" && request.method === "GET") {
+      return handleListCourses(ctx);
+    }
+    if (url.pathname === "/api/courses" && request.method === "POST") {
+      return handleCreateCourse(ctx);
+    }
+    const assignmentMatch = COURSE_ASSIGNMENT_RE.exec(url.pathname);
+    if (assignmentMatch) {
+      const courseId = assignmentMatch[1] as string;
+      const assignmentId = assignmentMatch[2];
+      if (!assignmentId && request.method === "GET") {
+        return handleListCourseAssignments(ctx, courseId);
+      }
+      if (!assignmentId && request.method === "POST") {
+        return handleCreateCourseAssignment(ctx, courseId);
+      }
+      if (assignmentId && request.method === "DELETE") {
+        return handleDeleteCourseAssignment(ctx, courseId, assignmentId);
+      }
+    }
+    const courseMatch = COURSE_ID_RE.exec(url.pathname);
+    if (courseMatch) {
+      const courseId = courseMatch[1] as string;
+      if (request.method === "GET") {
+        return handleGetCourse(ctx, courseId);
+      }
+      if (request.method === "PATCH") {
+        return handleUpdateCourse(ctx, courseId);
+      }
+      if (request.method === "DELETE") {
+        return handleDeleteCourse(ctx, courseId);
       }
     }
 
