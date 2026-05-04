@@ -21,6 +21,6 @@ not_found_handling = "single-page-application"
 [[d1_databases]]
 binding = "DB"
 database_name = "university-hub-v2"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "1c19aaa3-dbf6-4159-be4e-7fc89fb00752"
 # Migrations live at the repo root (see epic UNI-1, section 5).
 migrations_dir = "../../migrations"
