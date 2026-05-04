@@ -3,6 +3,7 @@ import type { HealthResponse } from "@university-hub/shared";
 import type { Env } from "./env.js";
 import { buildContext } from "./middleware/auth.js";
 import { handleMe, handleSignIn, handleSignOut } from "./routes/auth.js";
+import { handleDashboardSummary } from "./routes/dashboard.js";
 import { errorResponse, jsonOk } from "./utils/responses.js";
 
 export type { Env } from "./env.js";
@@ -34,6 +35,10 @@ export default {
     }
     if (url.pathname === "/api/auth/me" && request.method === "GET") {
       return handleMe(ctx);
+    }
+
+    if (url.pathname === "/api/dashboard/summary" && request.method === "GET") {
+      return handleDashboardSummary(ctx);
     }
 
     return errorResponse(404, "not_found", "The requested resource was not found.");
