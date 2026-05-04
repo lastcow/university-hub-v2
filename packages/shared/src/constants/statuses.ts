@@ -55,3 +55,21 @@ export const EMAIL_TYPES = [
   "contact_notification",
   "account_status_changed",
 ] as const;
+
+export const EMAIL_TYPE_LABELS: Record<(typeof EMAIL_TYPES)[number], string> = {
+  invitation: "Invitation",
+  invitation_resend: "Invitation (resend)",
+  welcome: "Welcome",
+  password_reset: "Password reset",
+  contact_notification: "Contact notification",
+  account_status_changed: "Account status changed",
+};
+
+export const EMAIL_LOG_STATUS_LABELS: Record<
+  (typeof EMAIL_LOG_STATUSES)[number],
+  string
+> = {
+  sent: "Sent",
+  failed: "Failed",
+  pending: "Pending",
+};

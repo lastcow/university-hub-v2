@@ -2,8 +2,10 @@ import type { HealthResponse } from "@university-hub/shared";
 
 import type { Env } from "./env.js";
 import { buildContext } from "./middleware/auth.js";
+import { handleListAuditLogs } from "./routes/audit-logs.js";
 import { handleMe, handleSignIn, handleSignOut } from "./routes/auth.js";
 import { handleCreateContactMessage } from "./routes/contact.js";
+import { handleListEmailLogs } from "./routes/email-logs.js";
 import {
   handleCreateCourse,
   handleCreateCourseAssignment,
@@ -125,6 +127,16 @@ export default {
 
     if (url.pathname === "/api/contact" && request.method === "POST") {
       return handleCreateContactMessage(ctx);
+    }
+
+    // Logs admin (UNI-14). Read-only; RBAC + university scoping inside the
+    // handlers (super_admin + university_admin for both; staff also reads
+    // audit logs but never email logs).
+    if (url.pathname === "/api/audit-logs" && request.method === "GET") {
+      return handleListAuditLogs(ctx);
+    }
+    if (url.pathname === "/api/email-logs" && request.method === "GET") {
+      return handleListEmailLogs(ctx);
     }
 
     // Invitation routes. Static paths first so the id-matching regex below
