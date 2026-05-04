@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Moon, Sun } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { HealthCheck } from "@/components/HealthCheck";
 import { getStoredTheme, toggleTheme, type Theme } from "@/lib/theme";
 
 export default function App() {
@@ -36,6 +37,7 @@ export default function App() {
           </p>
         </div>
         <Button>shadcn Button works</Button>
+        <HealthCheck />
       </main>
     </div>
   );
