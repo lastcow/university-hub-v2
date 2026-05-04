@@ -6,7 +6,20 @@ import {
   applyGenericLimit,
   rateLimitedResponse,
 } from "./middleware/rate-limit.js";
+import {
+  handleCreateAssessment,
+  handleDeleteAssessment,
+  handleListAssessments,
+  handleUpdateAssessment,
+} from "./routes/assessments.js";
 import { handleListAuditLogs } from "./routes/audit-logs.js";
+import { handleListGradeAccessLog } from "./routes/grade-access-log.js";
+import {
+  handleCreateGrade,
+  handleListCourseGrades,
+  handleListStudentGrades,
+  handleUpdateGrade,
+} from "./routes/grades.js";
 import {
   handleMe,
   handlePasswordResetRequest,
@@ -116,6 +129,14 @@ const DEPARTMENT_ID_RE = /^\/api\/departments\/([0-9a-fA-F-]{36})\/?$/;
 const COURSE_ID_RE = /^\/api\/courses\/([0-9a-fA-F-]{36})\/?$/;
 const COURSE_ASSIGNMENT_RE =
   /^\/api\/courses\/([0-9a-fA-F-]{36})\/assignments(?:\/([0-9a-fA-F-]{36}))?\/?$/;
+const COURSE_ASSESSMENTS_RE =
+  /^\/api\/courses\/([0-9a-fA-F-]{36})\/assessments\/?$/;
+const COURSE_GRADES_RE =
+  /^\/api\/courses\/([0-9a-fA-F-]{36})\/grades\/?$/;
+const ASSESSMENT_ID_RE = /^\/api\/assessments\/([0-9a-fA-F-]{36})\/?$/;
+const GRADE_ID_RE = /^\/api\/grades\/([0-9a-fA-F-]{36})\/?$/;
+const STUDENT_GRADES_RE =
+  /^\/api\/students\/([0-9a-fA-F-]{36})\/grades\/?$/;
 const STUDENT_ID_RE = /^\/api\/students\/([0-9a-fA-F-]{36})\/?$/;
 const FACULTY_ID_RE = /^\/api\/faculty\/([0-9a-fA-F-]{36})\/?$/;
 const TEACHER_ID_RE =
@@ -329,6 +350,15 @@ async function routeApi(
       return handleListEmailLogs(ctx);
     }
 
+    // FERPA record-of-access (UNI-30). Admin-only audit of grade
+    // disclosures, distinct from operational audit_logs.
+    if (
+      url.pathname === "/api/grade-access-log" &&
+      request.method === "GET"
+    ) {
+      return handleListGradeAccessLog(ctx);
+    }
+
     // Invitation routes. Static paths first so the id-matching regex below
     // doesn't try to interpret e.g. `accept` / `lookup` as a UUID.
     if (url.pathname === "/api/invitations" && request.method === "GET") {
@@ -441,6 +471,25 @@ async function routeApi(
         return handleDeleteCourseAssignment(ctx, courseId, assignmentId);
       }
     }
+    // Per-course assessments + grades (UNI-30). Match before the bare
+    // course-id regex so `/courses/:id/assessments` doesn't get swallowed.
+    const courseAssessmentsMatch = COURSE_ASSESSMENTS_RE.exec(url.pathname);
+    if (courseAssessmentsMatch) {
+      const courseId = courseAssessmentsMatch[1] as string;
+      if (request.method === "GET") {
+        return handleListAssessments(ctx, courseId);
+      }
+      if (request.method === "POST") {
+        return handleCreateAssessment(ctx, courseId);
+      }
+    }
+    const courseGradesMatch = COURSE_GRADES_RE.exec(url.pathname);
+    if (courseGradesMatch) {
+      const courseId = courseGradesMatch[1] as string;
+      if (request.method === "GET") {
+        return handleListCourseGrades(ctx, courseId);
+      }
+    }
     const courseMatch = COURSE_ID_RE.exec(url.pathname);
     if (courseMatch) {
       const courseId = courseMatch[1] as string;
@@ -453,6 +502,25 @@ async function routeApi(
       if (request.method === "DELETE") {
         return handleDeleteCourse(ctx, courseId);
       }
+    }
+
+    // Assessments + grades by id (UNI-30).
+    const assessmentIdMatch = ASSESSMENT_ID_RE.exec(url.pathname);
+    if (assessmentIdMatch) {
+      const assessmentId = assessmentIdMatch[1] as string;
+      if (request.method === "PATCH") {
+        return handleUpdateAssessment(ctx, assessmentId);
+      }
+      if (request.method === "DELETE") {
+        return handleDeleteAssessment(ctx, assessmentId);
+      }
+    }
+    if (url.pathname === "/api/grades" && request.method === "POST") {
+      return handleCreateGrade(ctx);
+    }
+    const gradeIdMatch = GRADE_ID_RE.exec(url.pathname);
+    if (gradeIdMatch && request.method === "PATCH") {
+      return handleUpdateGrade(ctx, gradeIdMatch[1] as string);
     }
 
     // Students directory (UNI-13). Static `/me*` paths first so the id regex
@@ -468,6 +536,12 @@ async function routeApi(
       request.method === "GET"
     ) {
       return handleListMyStudentCourses(ctx);
+    }
+    // Student grades (UNI-30). Match before the bare student-id regex so
+    // `/students/:id/grades` doesn't get swallowed.
+    const studentGradesMatch = STUDENT_GRADES_RE.exec(url.pathname);
+    if (studentGradesMatch && request.method === "GET") {
+      return handleListStudentGrades(ctx, studentGradesMatch[1] as string);
     }
     const studentMatch = STUDENT_ID_RE.exec(url.pathname);
     if (studentMatch && request.method === "GET") {

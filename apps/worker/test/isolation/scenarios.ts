@@ -10,7 +10,16 @@
 // adding a new protected route here automatically generates 23 test cases
 // (one per actor) at zero additional boilerplate.
 
+import {
+  handleCreateAssessment,
+  handleListAssessments,
+} from "../../src/routes/assessments.js";
 import { handleListAuditLogs } from "../../src/routes/audit-logs.js";
+import { handleListGradeAccessLog } from "../../src/routes/grade-access-log.js";
+import {
+  handleListCourseGrades,
+  handleListStudentGrades,
+} from "../../src/routes/grades.js";
 import {
   handleCreateCourse,
   handleCreateCourseAssignment,
@@ -93,6 +102,7 @@ import {
   INVITATION_A,
   PROFILE_FAC_A_A,
   PROFILE_STUD_A1,
+  USER_STUDENT_A1,
   PROFILE_TA_A_A,
   PROFILE_TCH_A_A,
   UNI_A,
@@ -576,6 +586,101 @@ export const SCENARIOS: Scenario[] = [
   // covering it here would require mutating the fixture per actor and
   // leaving the seed clean again, which would just hide regressions in the
   // other scenarios. The auth code path is the same as POST above.
+
+  // -------------------------------------------------------------------------
+  // assessments + grades + FERPA grade-access-log (UNI-30)
+  //
+  // Reads are scoped through the same per-course helper UNI-22 introduced;
+  // the fixture has zero seeded assessments / grades, so every read returns
+  // an empty list when the actor is allowed and 404 / 403 when not. POST and
+  // PATCH paths are exercised at unit-test level in routes/grades.test.ts —
+  // they need fixture mutation that doesn't fit the matrix's "every actor on
+  // a fresh seed" model.
+  // -------------------------------------------------------------------------
+  {
+    id: "GET /api/courses/:id/assessments (COURSE_A_A1)",
+    invoke: (actor, db) =>
+      handleListAssessments(
+        makeCtx(actor, db, get(`/api/courses/${COURSE_A_A1}/assessments`)),
+        COURSE_A_A1,
+      ),
+    // Faculty/teacher/TA assigned to A1 + students enrolled in A1 + admins
+    // and same-uni staff. Faculty B / Teacher B / TA B (assigned to UNI_A's
+    // B-courses, not A1) get 404 via the scoping helper.
+    successActors: [
+      "superAdmin",
+      "uniAAdmin",
+      "staffA",
+      "facultyA_inA",
+      "teacherA_inA",
+      "taA_inA",
+      "student1_inA",
+    ],
+  },
+  {
+    id: "POST /api/courses/:id/assessments (COURSE_A_A1)",
+    invoke: (actor, db) =>
+      handleCreateAssessment(
+        makeCtx(actor, db, {
+          method: "POST",
+          pathname: `/api/courses/${COURSE_A_A1}/assessments`,
+          body: { title: "Matrix exam", weight: 0.2, max_score: 100 },
+        }),
+        COURSE_A_A1,
+      ),
+    // Faculty assigned to course + admins. Teacher / TA / student / staff
+    // / cross-course faculty all denied (scoping helper restricts to faculty
+    // role, admins bypass).
+    successActors: ["superAdmin", "uniAAdmin", "facultyA_inA"],
+  },
+  {
+    id: "GET /api/courses/:id/grades (COURSE_A_A1)",
+    invoke: (actor, db) =>
+      handleListCourseGrades(
+        makeCtx(actor, db, get(`/api/courses/${COURSE_A_A1}/grades`)),
+        COURSE_A_A1,
+      ),
+    // Course gradebook: faculty/teacher/TA on the course + admins. Students
+    // (even enrolled) see this page through their own self view, not the
+    // gradebook. Staff doesn't pass either (admin or course-assigned only).
+    successActors: [
+      "superAdmin",
+      "uniAAdmin",
+      "facultyA_inA",
+      "teacherA_inA",
+      "taA_inA",
+    ],
+  },
+  {
+    id: "GET /api/students/:id/grades (student1_inA = USER_STUDENT_A1)",
+    invoke: (actor, db) =>
+      handleListStudentGrades(
+        makeCtx(actor, db, get(`/api/students/${USER_STUDENT_A1}/grades`)),
+        USER_STUDENT_A1,
+      ),
+    // student1_inA self; super_admin + same-uni admin; faculty/teacher/TA
+    // assigned to A1 (where student1_inA is enrolled). Faculty/teacher/TA
+    // assigned to other UNI_A courses (B1/B2) are denied because they
+    // aren't on any course this student is enrolled in. Other students,
+    // staff, guests, viewers, cross-uni actors → 404.
+    successActors: [
+      "superAdmin",
+      "uniAAdmin",
+      "student1_inA",
+      "facultyA_inA",
+      "teacherA_inA",
+      "taA_inA",
+    ],
+  },
+  {
+    id: "GET /api/grade-access-log",
+    invoke: (actor, db) =>
+      handleListGradeAccessLog(makeCtx(actor, db, get("/api/grade-access-log"))),
+    // FERPA admin record-of-disclosure surface — admins only. Even faculty,
+    // who can read individual students' grades, cannot see the aggregated
+    // disclosure log.
+    successActors: ["superAdmin", "uniAAdmin", "uniBAdmin"],
+  },
 
   // -------------------------------------------------------------------------
   // students directory

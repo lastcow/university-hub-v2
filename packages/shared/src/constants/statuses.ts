@@ -28,6 +28,17 @@ export const CONTACT_MESSAGE_STATUSES = [
 
 export const EMAIL_LOG_STATUSES = ["sent", "failed", "pending"] as const;
 
+export const GRADE_STATUSES = ["graded", "pending", "excused"] as const;
+
+export const GRADE_STATUS_LABELS: Record<
+  (typeof GRADE_STATUSES)[number],
+  string
+> = {
+  graded: "Graded",
+  pending: "Pending",
+  excused: "Excused",
+};
+
 export const COURSE_ASSIGNMENT_ROLES = [
   "faculty",
   "teacher",

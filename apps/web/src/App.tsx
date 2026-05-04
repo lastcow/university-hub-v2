@@ -9,7 +9,9 @@ import { AccessDeniedPage } from "@/pages/AccessDeniedPage";
 import { AuditLogsPage } from "@/pages/AuditLogsPage";
 import { CourseDetailPage } from "@/pages/CourseDetailPage";
 import { CourseEditPage } from "@/pages/CourseEditPage";
+import { CourseGradebookPage } from "@/pages/CourseGradebookPage";
 import { CourseNewPage } from "@/pages/CourseNewPage";
+import { GradeAccessLogPage } from "@/pages/GradeAccessLogPage";
 import { CoursesPage } from "@/pages/CoursesPage";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { DepartmentDetailPage } from "@/pages/DepartmentDetailPage";
@@ -28,6 +30,7 @@ import { SignInPage } from "@/pages/SignInPage";
 import { StudentDashboardPage } from "@/pages/StudentDashboardPage";
 import { StudentDetailPage } from "@/pages/StudentDetailPage";
 import { StudentMyCoursesPage } from "@/pages/StudentMyCoursesPage";
+import { StudentMyGradesPage } from "@/pages/StudentMyGradesPage";
 import { StudentMyProfilePage } from "@/pages/StudentMyProfilePage";
 import { StudentsPage } from "@/pages/StudentsPage";
 import { TeacherAssistantCoursesPage } from "@/pages/TeacherAssistantCoursesPage";
@@ -84,6 +87,10 @@ export default function App() {
             <Route path="courses/new" element={<CourseNewPage />} />
             <Route path="courses/:id" element={<CourseDetailPage />} />
             <Route path="courses/:id/edit" element={<CourseEditPage />} />
+            <Route
+              path="courses/:id/grades"
+              element={<CourseGradebookPage />}
+            />
             <Route path="students" element={<StudentsPage />} />
             <Route path="students/:id" element={<StudentDetailPage />} />
             <Route path="faculty" element={<FacultyPage />} />
@@ -115,11 +122,19 @@ export default function App() {
               element={<StudentMyCoursesPage />}
             />
             <Route
+              path="student/my-grades"
+              element={<StudentMyGradesPage />}
+            />
+            <Route
               path="student/my-profile"
               element={<StudentMyProfilePage />}
             />
             <Route path="guest/dashboard" element={<GuestDashboardPage />} />
             <Route path="audit-logs" element={<AuditLogsPage />} />
+            <Route
+              path="audit-logs/grade-access"
+              element={<GradeAccessLogPage />}
+            />
             <Route path="email-logs" element={<EmailLogsPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="ux" element={<UxStatesPage />} />

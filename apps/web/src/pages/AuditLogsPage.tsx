@@ -67,6 +67,8 @@ const CATEGORY_VARIANTS: Record<AuditActionCategory, BadgeProps["variant"]> = {
   university: "default",
   department: "outline",
   course: "outline",
+  assessment: "outline",
+  grade: "default",
   email: "warning",
   settings: "secondary",
   mfa: "secondary",

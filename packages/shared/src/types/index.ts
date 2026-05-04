@@ -5,6 +5,8 @@ export * from "./university.js";
 export * from "./invitation.js";
 export * from "./department.js";
 export * from "./course.js";
+export * from "./assessment.js";
+export * from "./grade.js";
 export * from "./student.js";
 export * from "./faculty.js";
 export * from "./teacher.js";
