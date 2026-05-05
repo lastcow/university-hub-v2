@@ -25,6 +25,15 @@ export type LmsProviderId =
 /** Lifecycle of an `lms_connections` row. */
 export type LmsConnectionStatus = "active" | "expired" | "revoked";
 
+/** How the user authenticated against the LMS. `oauth` covers the
+ *  standard OAuth Authorization Code dance (with optional refresh
+ *  tokens); `pat` covers a long-lived Personal Access Token the user
+ *  pastes from the LMS UI. PAT connections leave
+ *  `refresh_token_encrypted` NULL — there's no refresh path. Brought
+ *  into Phase 1 (was Phase 2) by the user's first-customer Canvas
+ *  test target exposing only a PAT. */
+export type LmsAuthMethod = "oauth" | "pat";
+
 /** Lifecycle of an `lms_sync_runs` row. */
 export type LmsSyncRunStatus =
   | "pending"
@@ -73,8 +82,12 @@ export interface LmsConnection {
   user_id: Id;
   university_id: Id;
   provider_id: LmsProviderId;
+  auth_method: LmsAuthMethod;
   base_url: string;
   access_token: string;
+  /** Always null for `auth_method === 'pat'` (no refresh path) and for
+   *  OAuth providers that don't issue a refresh token; populated for
+   *  the standard OAuth Authorization Code grant. */
   refresh_token: string | null;
   token_expires_at: IsoDateString | null;
   scope: string | null;
