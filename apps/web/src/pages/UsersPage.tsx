@@ -10,6 +10,7 @@ import {
   ROLES,
   ROLE_LABELS,
   USER_STATUSES,
+  displayUserName,
   type Role,
   type UserListItem,
   type UserStatus,
@@ -60,6 +61,10 @@ export function UsersPage() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<Role | "all">("all");
   const [statusFilter, setStatusFilter] = useState<UserStatus | "all">("all");
+  // UNI-61: tombstoned users are hidden by default; flipping this on adds
+  // `include_deleted=true` to the list query and renders the rows with a
+  // strikethrough so they're visually distinct from live accounts.
+  const [showRemoved, setShowRemoved] = useState(false);
 
   // Debounce the search input so we don't hammer the API on every keystroke.
   useEffect(() => {
@@ -72,8 +77,9 @@ export function UsersPage() {
     if (debouncedSearch) f.q = debouncedSearch;
     if (roleFilter !== "all") f.role = roleFilter;
     if (statusFilter !== "all") f.status = statusFilter;
+    if (showRemoved) f.include_deleted = true;
     return f;
-  }, [debouncedSearch, roleFilter, statusFilter]);
+  }, [debouncedSearch, roleFilter, statusFilter, showRemoved]);
 
   function load(signal?: AbortSignal) {
     if (!canView) return;
@@ -176,6 +182,15 @@ export function UsersPage() {
               ))}
             </select>
           </div>
+          <label className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={showRemoved}
+              onChange={(e) => setShowRemoved(e.target.checked)}
+              className="h-4 w-4 rounded border-input"
+            />
+            Show removed users
+          </label>
         </CardContent>
       </Card>
 
@@ -216,26 +231,32 @@ export function UsersPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {state.data!.map((row) => (
-                <TableRow key={row.id}>
-                  <TableCell className="font-medium">{row.name}</TableCell>
-                  <TableCell className="text-sm text-muted-foreground">{row.email}</TableCell>
-                  <TableCell>
-                    <RoleBadge role={row.role} />
-                  </TableCell>
-                  <TableCell>
-                    <UserStatusBadge status={row.status} />
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {row.university_name ?? "—"}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <Button asChild size="sm" variant="outline">
-                      <Link to={`/app/users/${row.id}`}>Open</Link>
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
+              {state.data!.map((row) => {
+                const removed = row.status === "deleted";
+                return (
+                  <TableRow
+                    key={row.id}
+                    className={removed ? "text-muted-foreground line-through" : undefined}
+                  >
+                    <TableCell className="font-medium">{displayUserName(row)}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{row.email}</TableCell>
+                    <TableCell>
+                      <RoleBadge role={row.role} />
+                    </TableCell>
+                    <TableCell>
+                      <UserStatusBadge status={row.status} />
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground">
+                      {row.university_name ?? "—"}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button asChild size="sm" variant="outline">
+                        <Link to={`/app/users/${row.id}`}>Open</Link>
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </Card>

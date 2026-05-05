@@ -184,4 +184,55 @@ describe("/api/auth/sign-in — MFA gate", () => {
     const cookies = setCookies(res).join(" | ");
     expect(cookies).not.toContain("university_hub_mfa_challenge=");
   });
+
+  // UNI-61 regression: anonymized users have password_hash = NULL. The
+  // sign-in handler must NOT feed NULL into verifyPassword (which would
+  // crash with TypeError: Cannot read properties of null) — instead it
+  // must collapse to the same generic 401 as wrong-email / wrong-password,
+  // so the deterministic `removed-<uuid>@local.invalid` address can't be
+  // used as an oracle for tombstone state.
+  it("returns 401 invalid_credentials for a tombstoned (NULL password_hash) row", async () => {
+    const user = await fixture("staff");
+    const tombstoned = {
+      ...user,
+      email: `removed-${user.id}@local.invalid`,
+      name: `Removed User #${user.id.slice(0, 8)}`,
+      password_hash: null as unknown as string,
+      mfa_secret: null,
+      mfa_enabled_at: null,
+      mfa_recovery_codes_hash: null,
+      status: "deleted" as unknown as "active",
+    };
+    const db = new ProgrammableD1();
+    db.onFirst((sql, params) => {
+      if (
+        sql.includes("FROM users") &&
+        sql.includes("WHERE email = ?") &&
+        params[0] === tombstoned.email
+      ) {
+        return tombstoned;
+      }
+      return undefined;
+    });
+    const env = { ...envFor(), DB: db as unknown as D1Database };
+    const request = new Request("http://localhost/api/auth/sign-in", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: tombstoned.email, password: "anything-goes" }),
+    });
+    const ctx = {
+      request,
+      env,
+      url: new URL(request.url),
+      cookies: {},
+      auth: null,
+    };
+    const res = await handleSignIn(ctx);
+    expect(res.status).toBe(401);
+    const json = (await res.json()) as { error?: { code?: string } };
+    expect(json.error?.code).toBe("invalid_credentials");
+    const cookies = setCookies(res).join(" | ");
+    expect(cookies).not.toContain("university_hub_mfa_challenge=");
+    expect(cookies).not.toContain("university_hub_session=");
+  });
 });

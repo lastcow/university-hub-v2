@@ -3,6 +3,7 @@ export const USER_STATUSES = [
   "inactive",
   "suspended",
   "pending",
+  "deleted",
 ] as const;
 
 export const INVITATION_STATUSES = [

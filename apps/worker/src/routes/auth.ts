@@ -257,6 +257,15 @@ export async function handleSignIn(ctx: RequestContext): Promise<Response> {
     return errorResponse(401, "invalid_credentials", INVALID_CREDENTIALS);
   }
 
+  // Tombstoned (UNI-61) rows have password_hash NULL — fold them into the
+  // same generic 401 as wrong-email/wrong-password. Returning a different
+  // status would (a) leak that the deterministic `removed-<uuid>@local.invalid`
+  // address resolves to a real anonymized row, and (b) crash verifyPassword,
+  // which presumes a `$`-delimited encoded string.
+  if (user.password_hash === null) {
+    return errorResponse(401, "invalid_credentials", INVALID_CREDENTIALS);
+  }
+
   const passwordOk = await verifyPassword(password, user.password_hash);
   if (!passwordOk) {
     return errorResponse(401, "invalid_credentials", INVALID_CREDENTIALS);

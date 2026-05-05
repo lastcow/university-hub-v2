@@ -19,6 +19,7 @@ const USER_STATUS_LABELS: Record<UserStatus, string> = {
   inactive: "Inactive",
   suspended: "Suspended",
   pending: "Pending",
+  deleted: "Removed",
 };
 
 const USER_STATUS_VARIANTS: Record<UserStatus, BadgeProps["variant"]> = {
@@ -26,6 +27,7 @@ const USER_STATUS_VARIANTS: Record<UserStatus, BadgeProps["variant"]> = {
   inactive: "outline",
   suspended: "destructive",
   pending: "warning",
+  deleted: "outline",
 };
 
 export function UserStatusBadge({ status }: { status: UserStatus }) {

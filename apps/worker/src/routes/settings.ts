@@ -323,10 +323,16 @@ export async function handleUpdateAccountSettings(
   // security-sensitive gate from the issue spec: the request must be rejected
   // when the current password is wrong.
   if (wantsPasswordChange) {
-    const ok = await verifyPassword(
-      parsed.data.current_password as string,
-      actor.password_hash,
-    );
+    // UNI-61: tombstoned users have password_hash NULL. Auth middleware
+    // filters status='deleted' upstream so this should be unreachable, but
+    // collapse to the wrong-current-password response defensively rather
+    // than feeding NULL into verifyPassword.
+    const ok =
+      actor.password_hash !== null &&
+      (await verifyPassword(
+        parsed.data.current_password as string,
+        actor.password_hash,
+      ));
     if (!ok) {
       // Audit the failed attempt — useful for detecting credential probing.
       await writeAuditLog(ctx.env.DB, {
