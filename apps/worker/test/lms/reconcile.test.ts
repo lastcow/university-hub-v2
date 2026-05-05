@@ -177,6 +177,14 @@ function makeFixture(seed: FixtureSeed = {}): Fixture {
       );
     }
     if (
+      s.startsWith("select id, email, university_id, external_provider, external_id, role, status") &&
+      s.includes("from users") &&
+      s.includes("where id = ?")
+    ) {
+      const [userId] = params as [string];
+      return users.find((u) => u.id === userId) ?? null;
+    }
+    if (
       s.startsWith(
         "select id, course_id, user_id, role, source, external_provider, external_id, status",
       ) &&
@@ -418,7 +426,9 @@ function makeProvider(
   return { provider, control };
 }
 
-function makeConnection(): LmsConnection {
+function makeConnection(
+  overrides: Partial<LmsConnection> = {},
+): LmsConnection {
   return {
     id: CONN_ID,
     user_id: ACTOR_USER_ID,
@@ -426,18 +436,23 @@ function makeConnection(): LmsConnection {
     provider_id: "canvas",
     base_url: "https://canvas.example.edu",
     access_token: "redacted",
+    external_user_id: null,
     status: "active",
     last_synced_at: null,
     created_at: "2026-05-01T00:00:00.000Z" as LmsConnection["created_at"],
     updated_at: "2026-05-01T00:00:00.000Z" as LmsConnection["updated_at"],
+    ...overrides,
   };
 }
 
-function makeInput(termName: string | null = "Fall 2026"): ReconciliationInput {
+function makeInput(
+  termName: string | null = "Fall 2026",
+  connection: LmsConnection = makeConnection(),
+): ReconciliationInput {
   return {
     syncRunId: "55555555-5555-5555-5555-555555555555",
     actorUserId: ACTOR_USER_ID,
-    connection: makeConnection(),
+    connection,
     termId: "T1",
     termName,
   };
@@ -1006,5 +1021,267 @@ describe("runLmsReconciliation — audit log coverage", () => {
     expect(
       fix.auditActions.some((a) => a.startsWith("invitation.")),
     ).toBe(false);
+  });
+});
+
+describe("runLmsReconciliation — UNI-67 iteration 3 owner auto-link", () => {
+  // The FSU operator's symptom: their Canvas account uses
+  // `zchen@frostburg.edu`, their Hub account uses `ebiz@chen.me`.
+  // Iteration-2's email/login_id matcher couldn't bridge the gap, so
+  // every term-245 Teacher row failed with `no_hub_user_for_teacher`.
+  // The connection now persists `external_user_id` (the Canvas
+  // user.id from `users/self`) at connect time, and reconcile uses it
+  // as the highest-precedence match key.
+
+  const OPERATOR_HUB_USER_ID = ACTOR_USER_ID;
+  const OPERATOR_CANVAS_ID = "22620";
+
+  it("matches faculty enrollment to the connection owner via external_user_id without needing email parity", async () => {
+    const fix = makeFixture({
+      // Hub user pre-exists with a totally different email shape
+      // (the operator signed up with a personal email; their FSU
+      // account uses the institutional one). No prior LMS linkage.
+      users: [
+        {
+          id: OPERATOR_HUB_USER_ID,
+          email: "ebiz@chen.me",
+          university_id: UNI_A,
+          external_provider: null,
+          external_id: null,
+          role: "faculty",
+          status: "active",
+        },
+      ],
+    });
+
+    const { provider } = makeProvider({
+      courses: [
+        {
+          external_id: "C1",
+          external_term_id: "T1",
+          name: "Operator's own course",
+          code: null,
+          description: null,
+        },
+      ],
+      enrollmentsByCourse: {
+        C1: [
+          {
+            external_id: "Eteach",
+            external_course_id: "C1",
+            external_user_id: OPERATOR_CANVAS_ID,
+            email: "zchen@frostburg.edu",
+            name: "Zhijiang Chen",
+            role: "teacher",
+          },
+        ],
+      },
+    });
+
+    const result = await run(
+      fix,
+      provider,
+      makeInput(
+        "Spring 2026",
+        makeConnection({ external_user_id: OPERATOR_CANVAS_ID }),
+      ),
+    );
+
+    expect(result.status).toBe("success");
+    expect(result.errors).toEqual([]);
+    // The course_assignments row was created against the operator's
+    // existing Hub user — same human, two systems, no email parity
+    // needed.
+    expect(fix.assignments).toHaveLength(1);
+    expect(fix.assignments[0]?.user_id).toBe(OPERATOR_HUB_USER_ID);
+    expect(fix.assignments[0]?.role).toBe("teacher");
+    // The user's external linkage was backfilled so the next sync
+    // takes the rule-1 fast path.
+    expect(fix.users[0]?.external_provider).toBe("canvas");
+    expect(fix.users[0]?.external_id).toBe(OPERATOR_CANVAS_ID);
+    // Audit row records the owner-match (distinct from
+    // student.matched / student.imported, so an admin can see how
+    // each row resolved).
+    expect(fix.auditActions).toContain("lms.sync.owner.matched");
+  });
+
+  it("matches student enrollment to the connection owner when the operator is a student in another course", async () => {
+    // Same Hub user, but this time enrolled as Student in a course
+    // they don't teach. Owner-link still applies — the rule is
+    // role-agnostic.
+    const fix = makeFixture({
+      users: [
+        {
+          id: OPERATOR_HUB_USER_ID,
+          email: "ebiz@chen.me",
+          university_id: UNI_A,
+          external_provider: null,
+          external_id: null,
+          role: "faculty",
+          status: "active",
+        },
+      ],
+    });
+
+    const { provider } = makeProvider({
+      courses: [
+        {
+          external_id: "C2",
+          external_term_id: "T1",
+          name: "Continuing Ed seminar",
+          code: null,
+          description: null,
+        },
+      ],
+      enrollmentsByCourse: {
+        C2: [
+          {
+            external_id: "Estu",
+            external_course_id: "C2",
+            external_user_id: OPERATOR_CANVAS_ID,
+            email: null,
+            name: "Zhijiang Chen",
+            role: "student",
+          },
+        ],
+      },
+    });
+
+    const result = await run(
+      fix,
+      provider,
+      makeInput(
+        "Spring 2026",
+        makeConnection({ external_user_id: OPERATOR_CANVAS_ID }),
+      ),
+    );
+
+    expect(result.status).toBe("success");
+    expect(fix.assignments).toHaveLength(1);
+    expect(fix.assignments[0]?.user_id).toBe(OPERATOR_HUB_USER_ID);
+    expect(fix.assignments[0]?.role).toBe("student");
+    // CRUCIALLY — no NEW user row was created. The owner link
+    // re-uses the existing Hub account.
+    expect(fix.users).toHaveLength(1);
+    // No FERPA disclosure_log row either: that's a side-effect of
+    // student auto-create, which didn't happen here.
+    expect(fix.disclosureLogs).toHaveLength(0);
+  });
+
+  it("does NOT owner-link a different Canvas user (regression: rule-1 must remain narrow)", async () => {
+    // A different student in the operator's course, with no email
+    // and no Hub account. Owner-link should not fire — the canvas
+    // ids don't match the connection's. Falls through to the
+    // standard error path.
+    const fix = makeFixture({
+      users: [
+        {
+          id: OPERATOR_HUB_USER_ID,
+          email: "ebiz@chen.me",
+          university_id: UNI_A,
+          external_provider: null,
+          external_id: null,
+          role: "faculty",
+          status: "active",
+        },
+      ],
+    });
+
+    const { provider } = makeProvider({
+      courses: [
+        {
+          external_id: "C1",
+          external_term_id: "T1",
+          name: "Operator's own course",
+          code: null,
+          description: null,
+        },
+      ],
+      enrollmentsByCourse: {
+        C1: [
+          {
+            external_id: "Etea",
+            external_course_id: "C1",
+            external_user_id: "99999",
+            email: null,
+            name: "Ghost",
+            role: "teacher",
+          },
+        ],
+      },
+    });
+
+    const result = await run(
+      fix,
+      provider,
+      makeInput(
+        "Spring 2026",
+        makeConnection({ external_user_id: OPERATOR_CANVAS_ID }),
+      ),
+    );
+
+    expect(result.status).toBe("partial");
+    expect(result.errors[0]?.message).toContain("no_hub_user_for_teacher");
+    // The operator's Hub user was NOT touched.
+    expect(fix.users[0]?.external_provider).toBeNull();
+    expect(fix.users[0]?.external_id).toBeNull();
+    expect(fix.assignments).toHaveLength(0);
+  });
+
+  it("when external_user_id is NULL on the connection (legacy row), owner-link is skipped", async () => {
+    // Pre-iteration-3 connections don't have external_user_id
+    // captured. Reconcile must continue to work via rule 2 (email)
+    // and rule 3 (auto-create or fail) without crashing.
+    const fix = makeFixture({
+      users: [
+        {
+          id: OPERATOR_HUB_USER_ID,
+          email: "zchen@frostburg.edu",
+          university_id: UNI_A,
+          external_provider: null,
+          external_id: null,
+          role: "faculty",
+          status: "active",
+        },
+      ],
+    });
+
+    const { provider } = makeProvider({
+      courses: [
+        {
+          external_id: "C1",
+          external_term_id: "T1",
+          name: "Course 1",
+          code: null,
+          description: null,
+        },
+      ],
+      enrollmentsByCourse: {
+        C1: [
+          {
+            external_id: "Eteach",
+            external_course_id: "C1",
+            external_user_id: OPERATOR_CANVAS_ID,
+            email: "zchen@frostburg.edu",
+            name: "Zhijiang Chen",
+            role: "teacher",
+          },
+        ],
+      },
+    });
+
+    const result = await run(
+      fix,
+      provider,
+      makeInput(
+        "Spring 2026",
+        makeConnection({ external_user_id: null }),
+      ),
+    );
+
+    // Email match resolves it — owner-link never fired.
+    expect(result.status).toBe("success");
+    expect(fix.assignments[0]?.user_id).toBe(OPERATOR_HUB_USER_ID);
+    expect(fix.auditActions).not.toContain("lms.sync.owner.matched");
   });
 });

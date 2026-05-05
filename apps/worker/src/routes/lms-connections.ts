@@ -60,6 +60,7 @@ interface ConnectionRow extends Row {
   provider_id: LmsProviderId;
   base_url: string;
   access_token_encrypted: string;
+  external_user_id: string | null;
   status: LmsConnectionStatus;
   last_synced_at: string | null;
   created_at: string;
@@ -68,7 +69,7 @@ interface ConnectionRow extends Row {
 
 const SELECT_CONNECTION = `
   SELECT id, user_id, university_id, provider_id, base_url,
-         access_token_encrypted, status, last_synced_at,
+         access_token_encrypted, external_user_id, status, last_synced_at,
          created_at, updated_at
     FROM lms_connections
 `;
@@ -219,8 +220,19 @@ export async function handleConnectCanvasConnection(
   // the only path that touches the network with the user-supplied token
   // before encryption, and the token never leaves this function's
   // closure in plaintext.
+  //
+  // Capture the validation response's `external_user_id` (Canvas's
+  // `users/self.id`). The connection's owner-on-the-LMS-side is the
+  // strongest possible match key during reconciliation: when an
+  // enrollment carries this id, we know it is THIS Hub user without
+  // needing email parity (UNI-67 iteration 3).
+  let externalUserId: string;
   try {
-    await validatePersonalAccessToken(config.base_url, personalAccessToken);
+    const validation = await validatePersonalAccessToken(
+      config.base_url,
+      personalAccessToken,
+    );
+    externalUserId = validation.external_user_id;
   } catch (cause) {
     if (cause instanceof CanvasApiError && cause.status === 401) {
       return errorResponse(
@@ -269,6 +281,7 @@ export async function handleConnectCanvasConnection(
           SET university_id = ?,
               base_url = ?,
               access_token_encrypted = ?,
+              external_user_id = ?,
               status = ?,
               updated_at = ?
         WHERE id = ?`,
@@ -276,6 +289,7 @@ export async function handleConnectCanvasConnection(
         actor.university_id,
         config.base_url,
         accessTokenEncrypted,
+        externalUserId,
         "active",
         now,
         existing.id,
@@ -288,9 +302,9 @@ export async function handleConnectCanvasConnection(
       ctx.env.DB,
       `INSERT INTO lms_connections
          (id, user_id, university_id, provider_id, base_url,
-          access_token_encrypted, status, last_synced_at,
+          access_token_encrypted, external_user_id, status, last_synced_at,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         connectionId,
         actor.id,
@@ -298,6 +312,7 @@ export async function handleConnectCanvasConnection(
         "canvas",
         config.base_url,
         accessTokenEncrypted,
+        externalUserId,
         "active",
         null,
         now,

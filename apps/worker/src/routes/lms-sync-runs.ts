@@ -82,6 +82,7 @@ interface ConnectionRow extends Row {
   provider_id: LmsProviderId;
   base_url: string;
   access_token_encrypted: string;
+  external_user_id: string | null;
   status: LmsConnectionStatus;
   last_synced_at: string | null;
   created_at: string;
@@ -102,7 +103,7 @@ interface SyncRunRow extends Row {
 
 const SELECT_CONNECTION = `
   SELECT id, user_id, university_id, provider_id, base_url,
-         access_token_encrypted, status, last_synced_at,
+         access_token_encrypted, external_user_id, status, last_synced_at,
          created_at, updated_at
     FROM lms_connections
 `;
@@ -165,6 +166,7 @@ async function rowToLmsConnection(
     provider_id: row.provider_id,
     base_url: row.base_url,
     access_token: accessToken,
+    external_user_id: row.external_user_id,
     status: row.status,
     last_synced_at:
       (row.last_synced_at ?? null) as LmsConnection["last_synced_at"],

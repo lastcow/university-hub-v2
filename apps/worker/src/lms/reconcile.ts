@@ -544,9 +544,36 @@ async function processEnrollment(args: EnrollmentProcessingArgs): Promise<void> 
   const email = enrollment.email ? enrollment.email.toLowerCase() : null;
   const externalUserId = enrollment.external_user_id;
 
-  // 1. Match by external linkage first.
+  // 0. Owner auto-link. If the enrollment's provider-native user id
+  //    equals the connection owner's provider-native user id (captured
+  //    at connect time from `/api/v1/users/self`), bind to the
+  //    connection's Hub user — same human in two systems with two
+  //    different email shapes. UNI-67 iteration 3: the FSU operator
+  //    is a Teacher in their own term-245 courses, but their Hub
+  //    email (`ebiz@chen.me`) doesn't match their Canvas email
+  //    (`zchen@frostburg.edu`), so neither external-linkage match nor
+  //    email match fires on first sync. The owner link is the
+  //    highest-precedence rule precisely because no other key can
+  //    bridge the email gap.
   let userRow: UserRow | null = null;
-  if (externalUserId) {
+  let matchedByOwner = false;
+  if (
+    input.connection.external_user_id &&
+    externalUserId === input.connection.external_user_id
+  ) {
+    userRow = await queryFirst<UserRow>(
+      db,
+      `SELECT id, email, university_id, external_provider, external_id, role, status
+         FROM users
+        WHERE id = ?
+        LIMIT 1`,
+      [input.connection.user_id],
+    );
+    if (userRow) matchedByOwner = true;
+  }
+
+  // 1. Match by external linkage.
+  if (!userRow && externalUserId) {
     userRow = await queryFirst<UserRow>(
       db,
       `SELECT id, email, university_id, external_provider, external_id, role, status
@@ -712,6 +739,40 @@ async function processEnrollment(args: EnrollmentProcessingArgs): Promise<void> 
         email,
         external_provider: providerId,
         external_id: externalUserId,
+      },
+    });
+  } else if (matchedByOwner) {
+    // 4b. Owner-link match — backfill the user's external_provider /
+    //     external_id so subsequent syncs hit rule 1 (the cheaper
+    //     external-linkage path) without needing the connection row.
+    //     Only writes if the user had no prior LMS linkage; if they
+    //     did, it's already correct or it's a different provider we
+    //     don't want to clobber.
+    if (!userRow.external_provider || !userRow.external_id) {
+      await execute(
+        db,
+        `UPDATE users
+            SET external_provider = ?, external_id = ?, updated_at = ?
+          WHERE id = ?
+            AND external_provider IS NULL
+            AND external_id IS NULL`,
+        [providerId, externalUserId, now, userRow.id],
+      );
+    }
+    if (isStudent) summary.students_matched += 1;
+    await writeAuditLog(db, {
+      action: "lms.sync.owner.matched",
+      actorUserId: input.actorUserId,
+      universityId,
+      entityType: "user",
+      entityId: userRow.id,
+      metadata: {
+        sync_run_id: input.syncRunId,
+        course_id: courseId,
+        course_external_id: course.external_id,
+        external_provider: providerId,
+        external_id: externalUserId,
+        role: enrollment.role,
       },
     });
   }

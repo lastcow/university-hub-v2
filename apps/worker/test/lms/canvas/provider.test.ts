@@ -42,6 +42,7 @@ const CONNECTION: LmsConnection = {
   provider_id: "canvas",
   base_url: "https://canvas.example.edu",
   access_token: "atk-fixture",
+  external_user_id: null,
   status: "active",
   last_synced_at: null,
   created_at: "2026-05-05T03:00:00Z" as IsoDateString,
@@ -74,6 +75,10 @@ describe("CanvasProvider.authenticate", () => {
     expect(conn.university_id).toBe(PROVIDER_CONFIG.university_id);
     expect(conn.access_token).toBe("canvas-pat-do-not-leak");
     expect(conn.status).toBe("active");
+    // UNI-67 iteration 3: capture the calling user's Canvas id so
+    // reconciliation can owner-link them to their Hub user without
+    // needing email parity.
+    expect(conn.external_user_id).toBe("4242");
     // Caller (route handler) is responsible for assigning these:
     expect(conn.id).toBe("");
     expect(conn.user_id).toBe("");
