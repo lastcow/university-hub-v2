@@ -26,6 +26,7 @@ import {
   submitMfaChallenge,
   verifyMfaEnrollment,
 } from "@/lib/mfa";
+import { getOnboardingLmsStep } from "@/lib/onboarding";
 import { cn } from "@/lib/utils";
 
 interface LocationState {
@@ -58,12 +59,33 @@ export function SignInPage() {
     return <Navigate to={redirectTo} replace />;
   }
 
-  const goAfterSignIn = (role: string) => {
-    const target =
+  // After every successful auth (credentials-only path, MFA enroll
+  // verify, MFA challenge verify) we ask the worker whether the user
+  // is owed a one-time post-MFA onboarding step (UNI-57). The endpoint
+  // evaluates the four gates server-side; a `true` response routes the
+  // user to /app/onboarding/lms, a `false` (or any error) lets the
+  // existing role-default dashboard redirect run. We honor an explicit
+  // `from` location only when it isn't itself the onboarding page —
+  // a deep-link to /app/onboarding/lms is fine, but a re-entry through
+  // `from` shouldn't suppress a freshly-eligible step on first sign-in.
+  const goAfterSignIn = async (role: string) => {
+    const fallbackTarget =
       fromState && fromState.startsWith("/app/")
         ? fromState
-        : defaultDashboardForRole(role as Parameters<typeof defaultDashboardForRole>[0]);
-    navigate(target, { replace: true });
+        : defaultDashboardForRole(
+            role as Parameters<typeof defaultDashboardForRole>[0],
+          );
+    try {
+      const onboarding = await getOnboardingLmsStep();
+      if (onboarding.show) {
+        navigate("/app/onboarding/lms", { replace: true });
+        return;
+      }
+    } catch {
+      // Fail open: any error here just falls through to the dashboard.
+      // The integrations page is always reachable from the side nav.
+    }
+    navigate(fallbackTarget, { replace: true });
   };
 
   async function onCredentialsSubmit(event: FormEvent<HTMLFormElement>) {
@@ -73,7 +95,7 @@ export function SignInPage() {
     try {
       const next = await signIn({ email, password });
       if (next.status === "ok") {
-        goAfterSignIn(next.user.role);
+        await goAfterSignIn(next.user.role);
         return;
       }
       // MFA gate: server set an HttpOnly mfa_challenge cookie. Move to the
@@ -119,7 +141,9 @@ export function SignInPage() {
           />
         ) : step === "mfa-enroll" ? (
           <MfaEnrollStep
-            onVerified={(role) => goAfterSignIn(role)}
+            onVerified={(role) => {
+              void goAfterSignIn(role);
+            }}
             onBack={() => {
               setStep("credentials");
               setError(null);
@@ -128,7 +152,9 @@ export function SignInPage() {
           />
         ) : (
           <MfaChallengeStep
-            onVerified={(role) => goAfterSignIn(role)}
+            onVerified={(role) => {
+              void goAfterSignIn(role);
+            }}
             onBack={() => {
               setStep("credentials");
               setError(null);

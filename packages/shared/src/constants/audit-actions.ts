@@ -65,6 +65,7 @@ export const AUDIT_ACTIONS = [
   "lms.sync.enrollment.dropped",
   "lms.sync.completed",
   "lms.sync.failed",
+  "lms.onboarding.dismissed",
 ] as const;
 
 export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
@@ -132,6 +133,7 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "lms.sync.enrollment.dropped": "LMS sync — enrollment dropped",
   "lms.sync.completed": "LMS sync completed",
   "lms.sync.failed": "LMS sync failed",
+  "lms.onboarding.dismissed": "LMS onboarding step dismissed",
 };
 
 /**

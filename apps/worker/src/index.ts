@@ -98,6 +98,10 @@ import {
   handleLmsSyncRunPreview,
 } from "./routes/lms-sync-runs.js";
 import {
+  handleDismissOnboardingLmsStep,
+  handleGetOnboardingLmsStep,
+} from "./routes/onboarding.js";
+import {
   handleCreateCourse,
   handleCreateCourseAssignment,
   handleDeleteCourse,
@@ -638,6 +642,20 @@ async function routeApi(
     const lmsSyncRunMatch = LMS_SYNC_RUN_ID_RE.exec(url.pathname);
     if (lmsSyncRunMatch && request.method === "GET") {
       return handleGetLmsSyncRun(ctx, lmsSyncRunMatch[1] as string);
+    }
+
+    // Onboarding hooks (UNI-57). Post-MFA "Connect your LMS" step.
+    if (
+      url.pathname === "/api/onboarding/lms-step" &&
+      request.method === "GET"
+    ) {
+      return handleGetOnboardingLmsStep(ctx);
+    }
+    if (
+      url.pathname === "/api/onboarding/lms-step/dismiss" &&
+      request.method === "POST"
+    ) {
+      return handleDismissOnboardingLmsStep(ctx);
     }
 
     // Logs admin (UNI-14). Read-only; RBAC + university scoping inside the

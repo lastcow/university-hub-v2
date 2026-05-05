@@ -98,6 +98,8 @@ interface ConnectionRow extends Row {
   updated_at: string;
 }
 
+type LmsConnectOrigin = "onboarding" | "integrations";
+
 interface OauthStateRow extends Row {
   state: string;
   user_id: string;
@@ -106,6 +108,10 @@ interface OauthStateRow extends Row {
   redirect_uri: string;
   created_at: string;
   expires_at: string;
+  /** UNI-57. Captured at /start-time so /callback can route the user
+   *  back to either the standing /app/integrations page or the
+   *  onboarding "Connected — sync now or later" step. */
+  origin: LmsConnectOrigin;
 }
 
 const SELECT_CONNECTION = `
@@ -176,13 +182,22 @@ function buildRedirectUri(ctx: RequestContext): string {
  * Choose where the `/callback` handler should redirect the browser
  * after a (success or failure) OAuth round-trip. Production deploys
  * set `APP_BASE_URL` to the SPA's origin (Cloudflare Pages); local dev
- * doesn't, in which case we fall back to the request's own origin. The
- * resulting URL is always the integrations page with a query param
- * the SPA reads to render a toast.
+ * doesn't, in which case we fall back to the request's own origin.
+ *
+ * The path differs by `origin`:
+ *   - `integrations` (default): /app/integrations — pre-existing
+ *     behavior. Handles the recurring "manage my LMS link" surface.
+ *   - `onboarding` (UNI-57): /app/onboarding/lms — the post-MFA
+ *     onboarding flow's "Connected — sync now or later" step.
+ *
+ * Both paths read the same `?connected=canvas` / `?lms_error=...&detail=...`
+ * query params; the SPA's two pages just render slightly different copy
+ * around the toast.
  */
 function buildSpaReturnUrl(
   ctx: RequestContext,
   outcome: "connected" | "error",
+  origin: LmsConnectOrigin,
   detail?: string,
 ): string {
   const base =
@@ -195,7 +210,9 @@ function buildSpaReturnUrl(
     params.set("lms_error", "canvas");
     if (detail) params.set("detail", detail);
   }
-  return `${trimmed}/app/integrations?${params.toString()}`;
+  const path =
+    origin === "onboarding" ? "/app/onboarding/lms" : "/app/integrations";
+  return `${trimmed}${path}?${params.toString()}`;
 }
 
 async function loadProviderConfig(
@@ -255,7 +272,7 @@ async function consumeStateRow(
   const row = await queryFirst<OauthStateRow>(
     db,
     `SELECT state, user_id, university_id, provider_id, redirect_uri,
-            created_at, expires_at
+            created_at, expires_at, origin
        FROM lms_oauth_states
       WHERE state = ?
       LIMIT 1`,
@@ -332,14 +349,16 @@ export async function handleStartCanvasConnection(
 
   const state = generateStateToken();
   const redirectUri = buildRedirectUri(ctx);
+  const origin: LmsConnectOrigin =
+    parsed.data.origin === "onboarding" ? "onboarding" : "integrations";
   const now = new Date();
   const expiresAt = new Date(now.getTime() + STATE_TTL_SECONDS * 1000);
   await execute(
     ctx.env.DB,
     `INSERT INTO lms_oauth_states
        (state, user_id, university_id, provider_id, redirect_uri,
-        created_at, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        created_at, expires_at, origin)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       state,
       actor.id,
@@ -348,6 +367,7 @@ export async function handleStartCanvasConnection(
       redirectUri,
       now.toISOString(),
       expiresAt.toISOString(),
+      origin,
     ],
   );
 
@@ -389,9 +409,13 @@ export async function handleCanvasOAuthCallback(
   if (errorParam) {
     // The user denied access at Canvas's consent screen, or Canvas
     // surfaced an error. Don't write an audit / DB row; bounce back to
-    // the SPA with a `lms_error` query param the page can render.
+    // the SPA with a `lms_error` query param the page can render. The
+    // pre-callback denial path doesn't have a state row to read origin
+    // from, so we always redirect to the standing integrations page —
+    // an onboarding-flow user will see the error there and can re-trigger
+    // from /app/integrations.
     return Response.redirect(
-      buildSpaReturnUrl(ctx, "error", errorParam),
+      buildSpaReturnUrl(ctx, "error", "integrations", errorParam),
       302,
     );
   }
@@ -469,6 +493,13 @@ export async function handleCanvasOAuthCallback(
     );
   }
 
+  // `origin` defaults to 'integrations' for any state row written before
+  // migration 0020 (the column has a default at the SQL level, but
+  // defensive normalization here keeps the post-migration path explicit
+  // and the type narrow).
+  const origin: LmsConnectOrigin =
+    stateRow.origin === "onboarding" ? "onboarding" : "integrations";
+
   let tokens;
   try {
     tokens = await exchangeCodeForTokens(
@@ -483,13 +514,13 @@ export async function handleCanvasOAuthCallback(
   } catch (cause) {
     if (cause instanceof CanvasOAuthError) {
       return Response.redirect(
-        buildSpaReturnUrl(ctx, "error", cause.code),
+        buildSpaReturnUrl(ctx, "error", origin, cause.code),
         302,
       );
     }
     console.error("lms_callback_token_exchange_failed", { cause });
     return Response.redirect(
-      buildSpaReturnUrl(ctx, "error", "exchange_failed"),
+      buildSpaReturnUrl(ctx, "error", origin, "exchange_failed"),
       302,
     );
   }
@@ -584,11 +615,30 @@ export async function handleCanvasOAuthCallback(
       provider_id: "canvas",
       auth_method: "oauth",
       created,
+      origin,
       has_refresh_token: refreshTokenEncrypted !== null,
     },
   });
 
-  return Response.redirect(buildSpaReturnUrl(ctx, "connected"), 302);
+  // UNI-57: a successful connect (from any origin) means the user has
+  // demonstrated intent. Stamp `users.lms_onboarding_dismissed_at` with
+  // COALESCE so we preserve the original timestamp on a re-connect
+  // (existing.user dropping then reconnecting). The onboarding gate
+  // then permanently treats the user as past the welcome flow.
+  await execute(
+    ctx.env.DB,
+    `UPDATE users
+        SET lms_onboarding_dismissed_at =
+              COALESCE(lms_onboarding_dismissed_at, ?),
+            updated_at = ?
+      WHERE id = ?`,
+    [now, now, actor.id],
+  );
+
+  return Response.redirect(
+    buildSpaReturnUrl(ctx, "connected", origin),
+    302,
+  );
 }
 
 // ---------------------------------------------------------------------------
