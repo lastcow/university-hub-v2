@@ -11,13 +11,16 @@
 export {
   CanvasProvider,
   defaultCanvasProvider,
+  pickRootAccount,
   type CanvasProviderDeps,
 } from "./provider.js";
 export {
+  type CanvasManageableAccount,
   listTerms,
   listMyCourses,
   listAccountCoursesForTerm,
   listEnrollments,
+  listManageableAccounts,
   deriveTermsFromCourses,
   validatePersonalAccessToken,
 } from "./api.js";

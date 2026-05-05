@@ -1,0 +1,14 @@
+[
+  {
+    "id": 1,
+    "name": "Frostburg State University",
+    "parent_account_id": null,
+    "root_account_id": 1
+  },
+  {
+    "id": 42,
+    "name": "FSU — College of Engineering",
+    "parent_account_id": 1,
+    "root_account_id": 1
+  }
+]

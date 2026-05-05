@@ -7,6 +7,7 @@ import {
   deriveTermsFromCourses,
   listAccountCoursesForTerm,
   listEnrollments,
+  listManageableAccounts,
   listMyCourses,
   listTerms,
 } from "../../../src/lms/canvas/api.js";
@@ -327,6 +328,61 @@ describe("listEnrollments", () => {
     ]);
     await listEnrollments(BASE, TOKEN, weirdId, { fetchImpl: mock.fetchImpl });
     expect(mock.calls).toHaveLength(1);
+  });
+});
+
+describe("listManageableAccounts", () => {
+  it("returns mapped accounts (id, name, parent_account_id) from /api/v1/accounts", async () => {
+    const url = `${BASE}/api/v1/accounts?per_page=100`;
+    const mock = mockFetch([
+      {
+        url,
+        response: () => rawResponse(loadFixture("accounts.json")),
+      },
+    ]);
+    const result = await listManageableAccounts(BASE, TOKEN, {
+      fetchImpl: mock.fetchImpl,
+    });
+    expect(result).toEqual([
+      { id: "1", name: "Frostburg State University", parent_account_id: null },
+      {
+        id: "42",
+        name: "FSU — College of Engineering",
+        parent_account_id: "1",
+      },
+    ]);
+
+    const headers = new Headers(mock.calls[0]!.init.headers);
+    expect(headers.get("Authorization")).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("returns [] when Canvas reports no manageable accounts (regular instructor)", async () => {
+    const mock = mockFetch([
+      {
+        url: `${BASE}/api/v1/accounts?per_page=100`,
+        response: () => rawResponse("[]"),
+      },
+    ]);
+    const result = await listManageableAccounts(BASE, TOKEN, {
+      fetchImpl: mock.fetchImpl,
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("propagates 401 as CanvasApiError unauthorized", async () => {
+    const mock = mockFetch([
+      {
+        url: `${BASE}/api/v1/accounts?per_page=100`,
+        response: () => jsonResponse({ errors: ["unauth"] }, { status: 401 }),
+      },
+    ]);
+    await expect(
+      listManageableAccounts(BASE, TOKEN, { fetchImpl: mock.fetchImpl }),
+    ).rejects.toMatchObject({
+      name: "CanvasApiError",
+      status: 401,
+      code: "unauthorized",
+    });
   });
 });
 

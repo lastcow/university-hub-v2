@@ -354,6 +354,75 @@ export async function listMyCourses(
   return all.filter((c) => c.external_term_id === termId);
 }
 
+// ---------- Manageable accounts ----------
+
+interface CanvasAccount {
+  id?: number | string;
+  name?: string;
+  parent_account_id?: number | string | null;
+  root_account_id?: number | string | null;
+}
+
+/** A Canvas account the calling token can manage, normalized for the
+ *  provider's account-discovery fallback (UNI-66). The shape carries
+ *  just enough to pick the institutional root: `parent_account_id`
+ *  is null on Canvas's root account and points at the parent on every
+ *  sub-account. */
+export interface CanvasManageableAccount {
+  id: string;
+  name: string | null;
+  parent_account_id: string | null;
+}
+
+function mapAccount(raw: CanvasAccount): CanvasManageableAccount | null {
+  if (raw.id === undefined || raw.id === null) return null;
+  const parent =
+    raw.parent_account_id === undefined || raw.parent_account_id === null
+      ? null
+      : String(raw.parent_account_id);
+  return {
+    id: String(raw.id),
+    name: typeof raw.name === "string" ? raw.name : null,
+    parent_account_id: parent,
+  };
+}
+
+/**
+ * GET `/api/v1/accounts` — accounts the calling user can manage.
+ *
+ * For an account admin Canvas returns the institutional root (and any
+ * sub-accounts they admin); for a regular instructor with no admin
+ * scope it returns the empty array. This is the discovery hook that
+ * lets `provider.listMyCourses` recover when `accounts/self` resolves
+ * to a context that has zero courses for the requested term — which
+ * happens whenever the operator's PAT was minted under a sub-account
+ * or a non-admin context (UNI-66 root cause #1).
+ *
+ * Returns the rows in the order Canvas emits them; the caller is
+ * responsible for picking the institutional root via
+ * `parent_account_id === null`.
+ */
+export async function listManageableAccounts(
+  baseUrl: string,
+  accessToken: string,
+  options: CanvasGetOptions = {},
+): Promise<CanvasManageableAccount[]> {
+  const fetchImpl =
+    options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const url = `${trimBaseUrl(baseUrl)}/api/v1/accounts?per_page=100`;
+  return getAllPages<CanvasManageableAccount>(
+    url,
+    accessToken,
+    fetchImpl,
+    (body) => {
+      const list = Array.isArray(body) ? (body as CanvasAccount[]) : [];
+      return list
+        .map(mapAccount)
+        .filter((a): a is CanvasManageableAccount => a !== null);
+    },
+  );
+}
+
 /**
  * GET `/api/v1/accounts/{accountId}/courses?enrollment_term_id=...`.
  * The *account-scoped* course list — returns every course in the

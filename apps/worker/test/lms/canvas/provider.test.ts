@@ -11,7 +11,7 @@ import type {
   LmsProviderConfig,
 } from "@university-hub/shared";
 
-import { CanvasProvider } from "../../../src/lms/canvas/provider.js";
+import { CanvasProvider, pickRootAccount } from "../../../src/lms/canvas/provider.js";
 import {
   LmsProviderRegistry,
   lmsProviderRegistry,
@@ -258,6 +258,176 @@ describe("CanvasProvider.listMyCourses + listEnrollments", () => {
     ).rejects.toMatchObject({ status: 429, code: "rate_limited" });
     // No fallback fetch was issued.
     expect(mock.calls).toHaveLength(1);
+  });
+});
+
+describe("CanvasProvider.listMyCourses — account discovery fallback (UNI-66)", () => {
+  // Same URLs as above, plus the discovery + retry endpoints.
+  const ACCOUNT_COURSES_SELF_URL =
+    "https://canvas.example.edu/api/v1/accounts/self/courses?enrollment_term_id=245&per_page=100" +
+    "&state%5B%5D=created&state%5B%5D=claimed&state%5B%5D=available&state%5B%5D=completed&include%5B%5D=term";
+  const ACCOUNTS_URL =
+    "https://canvas.example.edu/api/v1/accounts?per_page=100";
+  const ACCOUNT_COURSES_ROOT_URL =
+    "https://canvas.example.edu/api/v1/accounts/1/courses?enrollment_term_id=245&per_page=100" +
+    "&state%5B%5D=created&state%5B%5D=claimed&state%5B%5D=available&state%5B%5D=completed&include%5B%5D=term";
+  const USER_COURSES_URL =
+    "https://canvas.example.edu/api/v1/courses?enrollment_state=active&per_page=100" +
+    "&enrollment_role%5B%5D=TeacherEnrollment&enrollment_role%5B%5D=TaEnrollment&include%5B%5D=term";
+
+  it("retries with the institutional root when accounts/self/courses returns 200 + [] (FSU operator repro)", async () => {
+    // The exact symptom 1 repro from the UNI-66 bug body: account-scoped
+    // call against `self` returns 200 with an empty array because the
+    // PAT's `self` resolves to a non-institutional context. The fix
+    // discovers manageable accounts, picks the row with
+    // parent_account_id === null, and retries against it.
+    const mock = mockFetch([
+      {
+        url: ACCOUNT_COURSES_SELF_URL,
+        response: () => rawResponse("[]"),
+      },
+      {
+        url: ACCOUNTS_URL,
+        response: () => rawResponse(loadFixture("accounts.json")),
+      },
+      {
+        url: ACCOUNT_COURSES_ROOT_URL,
+        response: () => rawResponse(loadFixture("courses-page1.json")),
+      },
+    ]);
+    const provider = new CanvasProvider({ fetchImpl: mock.fetchImpl });
+    const courses = await provider.listMyCourses(CONNECTION, "245");
+    expect(courses.map((c) => c.external_id)).toEqual(["5001", "5002"]);
+    expect(mock.calls.map((c) => c.url)).toEqual([
+      ACCOUNT_COURSES_SELF_URL,
+      ACCOUNTS_URL,
+      ACCOUNT_COURSES_ROOT_URL,
+    ]);
+  });
+
+  // Variants of the URLs above keyed on term "101" so the user-scoped
+  // fallback's client-side filter (filters by external_term_id) can
+  // actually match the shared `courses-page1.json` fixture (its courses
+  // are in term 101). Asserting the fallback ran AND returned rows is
+  // meaningful here; the FSU-operator-repro path above uses term 245.
+  const ACCOUNT_COURSES_SELF_TERM_101_URL =
+    "https://canvas.example.edu/api/v1/accounts/self/courses?enrollment_term_id=101&per_page=100" +
+    "&state%5B%5D=created&state%5B%5D=claimed&state%5B%5D=available&state%5B%5D=completed&include%5B%5D=term";
+
+  it("falls back to user-scoped when discovery returns no manageable accounts", async () => {
+    // Regular instructor on a tenant where `accounts/self/courses`
+    // returns 200 + [] instead of 401 (Canvas behaviour varies on
+    // non-admin tokens). `accounts` returns [] too — the user has no
+    // admin scope to enumerate. Same outcome as a 401/403: drop to
+    // the user-scoped surface so the SPA renders the operator's
+    // personal teacher/TA enrollments instead of an empty preview.
+    const mock = mockFetch([
+      {
+        url: ACCOUNT_COURSES_SELF_TERM_101_URL,
+        response: () => rawResponse("[]"),
+      },
+      { url: ACCOUNTS_URL, response: () => rawResponse("[]") },
+      {
+        url: USER_COURSES_URL,
+        response: () => rawResponse(loadFixture("courses-page1.json")),
+      },
+    ]);
+    const provider = new CanvasProvider({ fetchImpl: mock.fetchImpl });
+    const courses = await provider.listMyCourses(CONNECTION, "101");
+    expect(courses).toHaveLength(2);
+    expect(mock.calls.map((c) => c.url)).toEqual([
+      ACCOUNT_COURSES_SELF_TERM_101_URL,
+      ACCOUNTS_URL,
+      USER_COURSES_URL,
+    ]);
+  });
+
+  it("falls back to user-scoped when /accounts itself 401s after empty courses", async () => {
+    // Discovery 401: the token is so non-admin Canvas refuses to enumerate
+    // accounts at all. We treat that the same as the original 401/403
+    // path on /courses and drop down to the user-scoped surface.
+    const mock = mockFetch([
+      {
+        url: ACCOUNT_COURSES_SELF_TERM_101_URL,
+        response: () => rawResponse("[]"),
+      },
+      {
+        url: ACCOUNTS_URL,
+        response: () => jsonResponse({ errors: ["unauth"] }, { status: 401 }),
+      },
+      {
+        url: USER_COURSES_URL,
+        response: () => rawResponse(loadFixture("courses-page1.json")),
+      },
+    ]);
+    const provider = new CanvasProvider({ fetchImpl: mock.fetchImpl });
+    const courses = await provider.listMyCourses(CONNECTION, "101");
+    expect(courses).toHaveLength(2);
+    expect(mock.calls.map((c) => c.url)).toEqual([
+      ACCOUNT_COURSES_SELF_TERM_101_URL,
+      ACCOUNTS_URL,
+      USER_COURSES_URL,
+    ]);
+  });
+
+  it("does not invoke discovery when the account-scoped call already returned rows (the common admin path)", async () => {
+    // Guard the regression: the FSU operator's term *did* return rows
+    // for the user before the bug; we don't want a perf hit on the
+    // happy path. One round-trip, no /accounts probe.
+    const mock = mockFetch([
+      {
+        url: ACCOUNT_COURSES_SELF_URL,
+        response: () => rawResponse(loadFixture("courses-page1.json")),
+      },
+    ]);
+    const provider = new CanvasProvider({ fetchImpl: mock.fetchImpl });
+    const courses = await provider.listMyCourses(CONNECTION, "245");
+    expect(courses).toHaveLength(2);
+    expect(mock.calls).toHaveLength(1);
+  });
+
+  it("returns the empty array unchanged when discovery's root account is also empty (genuinely zero courses for the term)", async () => {
+    // True-zero case: term has no courses anywhere. Discovery finds the
+    // root, retry returns []. We return [] and don't re-attempt against
+    // the user-scoped path — that would be inflation: returning the
+    // operator's *personal* enrollments when they asked for the term's
+    // course list.
+    const mock = mockFetch([
+      { url: ACCOUNT_COURSES_SELF_URL, response: () => rawResponse("[]") },
+      {
+        url: ACCOUNTS_URL,
+        response: () => rawResponse(loadFixture("accounts.json")),
+      },
+      { url: ACCOUNT_COURSES_ROOT_URL, response: () => rawResponse("[]") },
+    ]);
+    const provider = new CanvasProvider({ fetchImpl: mock.fetchImpl });
+    const courses = await provider.listMyCourses(CONNECTION, "245");
+    expect(courses).toEqual([]);
+    expect(mock.calls).toHaveLength(3);
+  });
+});
+
+describe("pickRootAccount", () => {
+  it("returns null when no accounts are manageable", () => {
+    expect(pickRootAccount([])).toBeNull();
+  });
+
+  it("prefers the row with parent_account_id === null (institutional root)", () => {
+    expect(
+      pickRootAccount([
+        { id: "42", name: "Sub", parent_account_id: "1" },
+        { id: "1", name: "Root", parent_account_id: null },
+      ]),
+    ).toBe("1");
+  });
+
+  it("falls back to the first row when no parentless account is present (sub-account admin)", () => {
+    expect(
+      pickRootAccount([
+        { id: "42", name: "Sub A", parent_account_id: "1" },
+        { id: "43", name: "Sub B", parent_account_id: "1" },
+      ]),
+    ).toBe("42");
   });
 });
 
