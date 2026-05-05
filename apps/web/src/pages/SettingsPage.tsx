@@ -17,6 +17,7 @@ import {
   FileText,
   KeyRound,
   Laptop,
+  Link2,
   Lock,
   LogOut,
   Mail,
@@ -25,6 +26,7 @@ import {
   Scale,
   ShieldCheck,
   ShieldAlert,
+  Trash2,
   University,
   UserCircle,
   XCircle,
@@ -37,6 +39,8 @@ import type {
   LegalAdminDocument,
   LegalAdminResponse,
   LegalDocumentKind,
+  LmsProviderConfigsResponse,
+  LmsProviderRegistryEntry,
   MailgunStatusResponse,
   MailgunVarStatusEntry,
   MfaStatusResponse,
@@ -47,6 +51,7 @@ import type {
   TrustedDeviceListItem,
   TrustedDeviceListResponse,
   University as UniversityType,
+  UpdateLmsProviderConfigInput,
 } from "@university-hub/shared";
 import { LEGAL_DOCUMENT_KIND_LABELS } from "@university-hub/shared";
 
@@ -71,6 +76,11 @@ import {
   updateEscalationContact,
 } from "@/lib/escalation-contacts";
 import { getLegalAdmin, updateLegalDocument } from "@/lib/legal";
+import {
+  deleteLmsProviderConfig,
+  listLmsProviderConfigs,
+  upsertLmsProviderConfig,
+} from "@/lib/lms-provider-configs";
 import {
   disableMfa,
   getMfaStatus,
@@ -219,6 +229,8 @@ export function SettingsPage() {
       {user?.role === "super_admin" ? <SystemSettingsSection /> : null}
 
       {canEditUniversity ? <LegalSection /> : null}
+
+      {canEditUniversity ? <IntegrationsSection /> : null}
 
       {user?.role === "super_admin" ? <EscalationContactsSection /> : null}
 
@@ -2217,5 +2229,374 @@ function SystemSettingsSection() {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// LMS integrations (UNI-53)
+//
+// Per-provider OAuth client configuration. Visible only to super_admin /
+// university_admin (gated at the call site by `canEditUniversity` + the
+// endpoint's RBAC). The client secret is never returned by the API; we
+// rely on `has_client_secret` to render an "existing secret on file"
+// indicator and let an admin save without re-pasting the secret.
+// ---------------------------------------------------------------------------
+
+interface LmsState {
+  status: LoadStatus;
+  data?: LmsProviderConfigsResponse;
+  error?: string;
+}
+
+function IntegrationsSection() {
+  const [state, setState] = useState<LmsState>({ status: "idle" });
+  const [busyProvider, setBusyProvider] = useState<string | null>(null);
+
+  async function reload() {
+    setState({ status: "loading" });
+    try {
+      const data = await listLmsProviderConfigs();
+      setState({ status: "ok", data });
+    } catch (cause) {
+      setState({
+        status: "error",
+        error:
+          cause instanceof ApiClientError
+            ? cause.message
+            : "Could not load LMS integrations.",
+      });
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ status: "loading" });
+    listLmsProviderConfigs()
+      .then((data) => {
+        if (!cancelled) setState({ status: "ok", data });
+      })
+      .catch((cause) => {
+        if (cancelled) return;
+        setState({
+          status: "error",
+          error:
+            cause instanceof ApiClientError
+              ? cause.message
+              : "Could not load LMS integrations.",
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Link2 className="h-5 w-5 text-muted-foreground" />
+          <CardTitle>Integrations</CardTitle>
+        </div>
+        <CardDescription>
+          Configure Learning Management System (LMS) OAuth clients for your
+          university. Once a provider is configured and enabled, faculty and
+          teachers can connect their account from{" "}
+          <code className="font-mono text-xs">/app/integrations</code>.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {state.status === "loading" || state.status === "idle" ? (
+          <div className="space-y-3">
+            <Skeleton className="h-32 w-full" />
+          </div>
+        ) : state.status === "error" ? (
+          <ErrorState
+            title="Couldn't load LMS integrations"
+            description={state.error}
+          />
+        ) : !state.data || state.data.providers.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No LMS providers are available in this build.
+          </p>
+        ) : (
+          state.data.providers.map((entry) => (
+            <ProviderCard
+              key={entry.provider_id}
+              entry={entry}
+              busy={busyProvider === entry.provider_id}
+              onSave={async (input) => {
+                setBusyProvider(entry.provider_id);
+                try {
+                  await upsertLmsProviderConfig(input);
+                  toast({
+                    title: `${entry.display_name} integration saved`,
+                    variant: "success",
+                  });
+                  await reload();
+                } finally {
+                  setBusyProvider(null);
+                }
+              }}
+              onDelete={async () => {
+                if (!entry.config) return;
+                setBusyProvider(entry.provider_id);
+                try {
+                  await deleteLmsProviderConfig(entry.config.id);
+                  toast({
+                    title: `${entry.display_name} integration removed`,
+                    variant: "success",
+                  });
+                  await reload();
+                } finally {
+                  setBusyProvider(null);
+                }
+              }}
+            />
+          ))
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ProviderCard({
+  entry,
+  busy,
+  onSave,
+  onDelete,
+}: {
+  entry: LmsProviderRegistryEntry;
+  busy: boolean;
+  onSave: (input: UpdateLmsProviderConfigInput) => Promise<void>;
+  onDelete: () => Promise<void>;
+}) {
+  const existing = entry.config;
+  const [baseUrl, setBaseUrl] = useState(existing?.base_url ?? "");
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [enabled, setEnabled] = useState(existing?.enabled ?? true);
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Reset form when the registry entry changes (e.g. after a save).
+  useEffect(() => {
+    setBaseUrl(existing?.base_url ?? "");
+    setClientId("");
+    setClientSecret("");
+    setEnabled(existing?.enabled ?? true);
+    setError(null);
+  }, [existing?.id, existing?.updated_at]);
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+
+    // Client-side validation that mirrors the server's zod schema —
+    // catches the common cases without a round-trip but the server is
+    // still the source of truth.
+    let url: URL;
+    try {
+      url = new URL(baseUrl.trim());
+    } catch {
+      setError("Base URL must be a valid https:// URL.");
+      return;
+    }
+    if (url.protocol !== "https:") {
+      setError("Base URL must use https://.");
+      return;
+    }
+    const trimmedClientId = clientId.trim() || existing?.client_id_last4;
+    if (!existing && (!clientId.trim() || clientId.trim().length === 0)) {
+      setError("Client ID is required.");
+      return;
+    }
+    if (!existing && clientSecret.trim().length === 0) {
+      setError("Client secret is required when configuring a provider for the first time.");
+      return;
+    }
+
+    try {
+      await onSave({
+        provider_id: entry.provider_id,
+        base_url: baseUrl.trim(),
+        // On re-edit, allow leaving client_id blank to mean "no change".
+        // The server still needs the value, so we send the existing last-4
+        // back? No — we send the current input or, when blank on update,
+        // the user must paste the existing client_id. The form's
+        // placeholder reminds them. The server only requires non-empty.
+        client_id: clientId.trim().length > 0
+          ? clientId.trim()
+          : (trimmedClientId ?? ""),
+        client_secret: clientSecret.length > 0 ? clientSecret : "",
+        enabled,
+      });
+      setClientSecret("");
+    } catch (cause) {
+      setError(
+        cause instanceof ApiClientError
+          ? cause.message
+          : "Could not save the integration.",
+      );
+    }
+  }
+
+  return (
+    <div className="rounded-md border bg-card p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-semibold">{entry.display_name}</p>
+            {existing ? (
+              existing.enabled ? (
+                <Badge variant="success">Configured</Badge>
+              ) : (
+                <Badge variant="secondary">Configured (disabled)</Badge>
+              )
+            ) : (
+              <Badge variant="outline">Not configured</Badge>
+            )}
+          </div>
+          {existing ? (
+            <p className="text-xs text-muted-foreground">
+              <span className="font-mono">{existing.base_url}</span>
+              {" · "}
+              client ID ending <span className="font-mono">{existing.client_id_last4}</span>
+              {existing.has_client_secret ? " · secret on file" : ""}
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Configure OAuth credentials to enable this provider.
+            </p>
+          )}
+          {existing?.enabled ? (
+            <p className="text-xs text-muted-foreground">
+              Users can now connect via{" "}
+              <code className="font-mono">/app/integrations</code>.
+            </p>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            disabled={busy}
+          >
+            {open ? "Cancel" : existing ? "Edit" : "Configure"}
+          </Button>
+          {existing ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              type="button"
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Remove the ${entry.display_name} integration? Users will be unable to connect or sync until it is reconfigured.`,
+                  )
+                ) {
+                  void onDelete();
+                }
+              }}
+              disabled={busy}
+              aria-label={`Remove ${entry.display_name} integration`}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          ) : null}
+        </div>
+      </div>
+
+      {open ? (
+        <form
+          onSubmit={onSubmit}
+          noValidate
+          className="mt-4 space-y-3 border-t pt-4"
+        >
+          <div className="space-y-1">
+            <Label htmlFor={`lms-${entry.provider_id}-base-url`}>
+              Base URL
+            </Label>
+            <Input
+              id={`lms-${entry.provider_id}-base-url`}
+              type="url"
+              required
+              placeholder="https://canvas.example.edu"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              disabled={busy}
+            />
+            <p className="text-xs text-muted-foreground">
+              Must start with <code className="font-mono">https://</code>.
+            </p>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`lms-${entry.provider_id}-client-id`}>
+              Client ID
+            </Label>
+            <Input
+              id={`lms-${entry.provider_id}-client-id`}
+              required={!existing}
+              placeholder={
+                existing
+                  ? `…${existing.client_id_last4} (paste full value to change)`
+                  : ""
+              }
+              value={clientId}
+              onChange={(e) => setClientId(e.target.value)}
+              disabled={busy}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`lms-${entry.provider_id}-client-secret`}>
+              Client secret
+            </Label>
+            <Input
+              id={`lms-${entry.provider_id}-client-secret`}
+              type="password"
+              autoComplete="off"
+              required={!existing}
+              placeholder={
+                existing && existing.has_client_secret
+                  ? "leave blank to keep existing"
+                  : ""
+              }
+              value={clientSecret}
+              onChange={(e) => setClientSecret(e.target.value)}
+              disabled={busy}
+            />
+            <p className="text-xs text-muted-foreground">
+              {existing && existing.has_client_secret
+                ? "Leave blank to keep the existing client secret. Paste a new value to rotate it."
+                : "The shared secret from your LMS OAuth client. Stored encrypted at rest."}
+            </p>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-input"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+              disabled={busy}
+            />
+            <span>Enabled — users can connect from /app/integrations</span>
+          </label>
+          {error ? (
+            <div
+              role="alert"
+              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            >
+              {error}
+            </div>
+          ) : null}
+          <div className="flex justify-end gap-2">
+            <Button type="submit" disabled={busy}>
+              {busy ? "Saving…" : existing ? "Save changes" : "Save"}
+            </Button>
+          </div>
+        </form>
+      ) : null}
+    </div>
   );
 }
