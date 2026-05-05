@@ -68,7 +68,11 @@ export type UserRow = Row & {
   role: User["role"];
   status: UserStatus;
   university_id: string | null;
-  password_hash: string;
+  // Nullable since UNI-61: anonymized (status='deleted') rows have their
+  // credential material wiped to NULL. Every consumer that feeds this into
+  // verifyPassword must null-check first and deny credential-shaped
+  // operations the same way they deny a missing user.
+  password_hash: string | null;
   last_sign_in_at: string | null;
   created_at: string;
   updated_at: string;
@@ -89,7 +93,7 @@ type SessionWithUserRow = Row & {
   u_role: User["role"];
   u_status: UserStatus;
   u_university_id: string | null;
-  u_password_hash: string;
+  u_password_hash: string | null;
   u_last_sign_in_at: string | null;
   u_created_at: string;
   u_updated_at: string;

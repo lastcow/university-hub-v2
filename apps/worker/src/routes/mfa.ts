@@ -683,6 +683,18 @@ export async function handleMfaRegenerateRecoveryCodes(
       "Enroll in MFA before regenerating recovery codes.",
     );
   }
+  // Tombstoned (UNI-61) rows have password_hash NULL. Auth middleware filters
+  // status='deleted' upstream, but defense-in-depth: never feed NULL into
+  // verifyPassword (it presumes a `$`-delimited encoded string and would
+  // crash). Fold into the same wrong_password response shape so the handler
+  // can't be used as an oracle for tombstone state.
+  if (user.password_hash === null) {
+    return errorResponse(
+      401,
+      "wrong_password",
+      "That password is not correct.",
+    );
+  }
   const passwordOk = await verifyPassword(parsed.data.password, user.password_hash);
   if (!passwordOk) {
     return errorResponse(
@@ -754,6 +766,15 @@ export async function handleMfaDisable(
       403,
       "mfa_required_for_role",
       "MFA is mandatory for your role and cannot be disabled.",
+    );
+  }
+  // See UNI-61 note in handleMfaRegenerateRecoveryCodes — tombstoned rows
+  // carry NULL password_hash and must be denied before verifyPassword runs.
+  if (user.password_hash === null) {
+    return errorResponse(
+      401,
+      "wrong_password",
+      "That password is not correct.",
     );
   }
   const passwordOk = await verifyPassword(parsed.data.password, user.password_hash);
