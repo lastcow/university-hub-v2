@@ -91,6 +91,13 @@ import {
   handleStartCanvasConnection,
 } from "./routes/lms-connections.js";
 import {
+  handleCreateLmsSyncRun,
+  handleGetLmsSyncRun,
+  handleListLmsConnectionTerms,
+  handleListLmsSyncRuns,
+  handleLmsSyncRunPreview,
+} from "./routes/lms-sync-runs.js";
+import {
   handleCreateCourse,
   handleCreateCourseAssignment,
   handleDeleteCourse,
@@ -222,9 +229,13 @@ const LMS_PROVIDER_CONFIG_ID_RE =
   /^\/api\/lms\/provider-configs\/([0-9a-fA-F-]{36})\/?$/;
 const LMS_CONNECTION_DISCONNECT_RE =
   /^\/api\/lms\/connections\/([0-9a-fA-F-]{36})\/disconnect\/?$/;
+const LMS_CONNECTION_TERMS_RE =
+  /^\/api\/lms\/connections\/([0-9a-fA-F-]{36})\/terms\/?$/;
+const LMS_SYNC_RUN_ID_RE =
+  /^\/api\/lms\/sync-runs\/([0-9a-fA-F-]{36})\/?$/;
 
 export default {
-  async fetch(request, env): Promise<Response> {
+  async fetch(request, env, executionCtx): Promise<Response> {
     const url = new URL(request.url);
 
     // The Worker is API-only — the SPA ships from a separate Cloudflare
@@ -249,7 +260,7 @@ export default {
       return buildPreflightResponse(env, request);
     }
 
-    const ctx = await buildContext(request, env);
+    const ctx = await buildContext(request, env, executionCtx);
 
     // Generic API rate limit (UNI-25). Authenticated callers get a per-session
     // bucket (~120 req/min); everyone else a per-IP bucket (~30 req/min).
@@ -593,6 +604,40 @@ async function routeApi(
         ctx,
         lmsConnectionDisconnectMatch[1] as string,
       );
+    }
+    const lmsConnectionTermsMatch = LMS_CONNECTION_TERMS_RE.exec(
+      url.pathname,
+    );
+    if (lmsConnectionTermsMatch && request.method === "GET") {
+      return handleListLmsConnectionTerms(
+        ctx,
+        lmsConnectionTermsMatch[1] as string,
+      );
+    }
+
+    // LMS sync orchestration (UNI-55). Static collection paths first so
+    // `/preview` doesn't get parsed as a UUID by the per-id regex.
+    if (
+      url.pathname === "/api/lms/sync-runs" &&
+      request.method === "GET"
+    ) {
+      return handleListLmsSyncRuns(ctx);
+    }
+    if (
+      url.pathname === "/api/lms/sync-runs/preview" &&
+      request.method === "POST"
+    ) {
+      return handleLmsSyncRunPreview(ctx);
+    }
+    if (
+      url.pathname === "/api/lms/sync-runs" &&
+      request.method === "POST"
+    ) {
+      return handleCreateLmsSyncRun(ctx);
+    }
+    const lmsSyncRunMatch = LMS_SYNC_RUN_ID_RE.exec(url.pathname);
+    if (lmsSyncRunMatch && request.method === "GET") {
+      return handleGetLmsSyncRun(ctx, lmsSyncRunMatch[1] as string);
     }
 
     // Logs admin (UNI-14). Read-only; RBAC + university scoping inside the

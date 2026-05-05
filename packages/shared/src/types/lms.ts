@@ -311,3 +311,112 @@ export interface DisconnectLmsConnectionResponse {
   ok: true;
   connection: LmsConnectionPublic;
 }
+
+// ---------------------------------------------------------------------------
+// Sync orchestration (UNI-55).
+//
+// Five endpoints back the sync UI: list-terms (proxy to the provider),
+// preview-counts (no writes), kick-off, get-by-id (UI polling), list
+// caller's recent runs. The reconciliation/upsert engine itself is
+// UNI-56; this surface is the orchestration shell that drives a
+// `lms_sync_runs` row through its lifecycle.
+// ---------------------------------------------------------------------------
+
+/** Element of `GET /api/lms/connections/:id/terms` response — provider
+ *  term as the SPA sees it. The Canvas (and future) adapter normalizes
+ *  to `LmsTerm`; this surface adds nothing on top. Aliased so the SPA
+ *  doesn't have to import the provider-substrate name. */
+export type LmsConnectionTerm = LmsTerm;
+
+export interface LmsConnectionTermsResponse {
+  /** Provider id this term list belongs to (echoes the connection's
+   *  provider, present so the UI doesn't have to thread it through). */
+  provider_id: LmsProviderId;
+  terms: LmsConnectionTerm[];
+}
+
+/** Body of `POST /api/lms/sync-runs/preview` and `POST /api/lms/sync-runs`. */
+export interface LmsSyncRunInput {
+  connection_id: Id;
+  /** Provider-native term id (`LmsTerm.external_id`) the user picked. */
+  term_id: string;
+}
+
+/** Successful response of `POST /api/lms/sync-runs/preview`. Read-only —
+ *  no row is created. The estimates are derived from a single network
+ *  round-trip per course (first page only, per the issue spec) so a
+ *  preview against a 100-course term doesn't fan out to a full sync. */
+export interface LmsSyncPreviewResponse {
+  connection_id: Id;
+  term_id: string;
+  /** Display label for the picked term. Pulled from the cached provider
+   *  term list so the UI doesn't need a second round-trip to render
+   *  "Importing Fall 2026 — 12 courses, ~340 students". */
+  term_name: string | null;
+  courses: number;
+  students_total: number;
+  /** Estimate of how many of `students_total` are not yet Hub users.
+   *  Best-effort — the precise figure lands after reconciliation runs.
+   *  The preview path matches against `users.email` only (it does not
+   *  consult `(external_provider, external_id)`), so it slightly
+   *  overcounts when a Hub row was previously imported under a
+   *  different email but reconciled by external id. UNI-56 narrows
+   *  this; for the preview shell we surface it as ~estimate. */
+  students_new_estimate: number;
+  /** Estimate of how many of `courses` are not yet Hub courses, by
+   *  `(external_provider, external_id)` lookup. */
+  courses_new_estimate: number;
+  /** When the preview reads only the first page of enrollments per
+   *  course, set true so the SPA can render "+~" alongside the count. */
+  truncated: boolean;
+}
+
+/** Per-run progress signal stored in `summary_json.progress` while a
+ *  run is `running`. The stub runner (UNI-55) emits the four standard
+ *  steps below; UNI-56's reconciliation engine will emit finer-grained
+ *  values as it touches each course. */
+export interface LmsSyncRunProgress {
+  current_step: number;
+  total_steps: number;
+  /** Short human-readable label for the current step, surfaced in the
+   *  UI's progress view ("Listing courses", "Reconciling enrollments",
+   *  etc.). */
+  label: string | null;
+}
+
+/** Successful response of `POST /api/lms/sync-runs`. Returns the new
+ *  row's id immediately; the SPA polls `GET /api/lms/sync-runs/:id` to
+ *  watch progress. */
+export interface CreateLmsSyncRunResponse {
+  sync_run_id: Id;
+  status: LmsSyncRunStatus;
+}
+
+/** Public shape of an `lms_sync_runs` row as returned by
+ *  `GET /api/lms/sync-runs/:id` and the listing endpoint. The persisted
+ *  `summary_json` / `error_log_json` strings are parsed before the
+ *  response goes out so the SPA never has to JSON.parse a column. */
+export interface LmsSyncRunPublic {
+  id: Id;
+  user_id: Id;
+  connection_id: Id;
+  term_id: string | null;
+  /** Human-readable name copied from the term catalog at run time. Null
+   *  when the run was started against an LMS-only term that the Hub
+   *  hasn't reconciled yet. */
+  term_name: string | null;
+  started_at: IsoDateString;
+  completed_at: IsoDateString | null;
+  status: LmsSyncRunStatus;
+  summary: LmsSyncSummary | null;
+  errors: LmsSyncError[] | null;
+  progress: LmsSyncRunProgress | null;
+}
+
+export interface LmsSyncRunResponse {
+  sync_run: LmsSyncRunPublic;
+}
+
+export interface LmsSyncRunsResponse {
+  sync_runs: LmsSyncRunPublic[];
+}
