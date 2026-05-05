@@ -147,23 +147,31 @@ describe("listTerms", () => {
 });
 
 describe("listMyCourses", () => {
-  it("paginates via the Link header and filters to the requested term", async () => {
-    const url1 =
-      `${BASE}/api/v1/courses?enrollment_state=active&per_page=100` +
-      `&enrollment_role%5B%5D=TeacherEnrollment&enrollment_role%5B%5D=TaEnrollment&include%5B%5D=term`;
-    const url2 = `${BASE}/api/v1/courses?page=bookmark%3Adef&per_page=100`;
+  // The user-scoped path issues TWO calls (teacher + ta) since Canvas
+  // only accepts a scalar `enrollment_type`; the array form returns 0
+  // (UNI-67 root cause). Tests assert both calls fire.
+  const TEACHER_URL =
+    `${BASE}/api/v1/courses?enrollment_state=active&enrollment_type=teacher` +
+    `&per_page=100&include%5B%5D=term`;
+  const TA_URL =
+    `${BASE}/api/v1/courses?enrollment_state=active&enrollment_type=ta` +
+    `&per_page=100&include%5B%5D=term`;
+
+  it("paginates via the Link header on the teacher call and filters to the requested term", async () => {
+    const teacherUrl2 = `${BASE}/api/v1/courses?page=bookmark%3Adef&per_page=100`;
     const mock = mockFetch([
       {
-        url: url1,
+        url: TEACHER_URL,
         response: () =>
           rawResponse(loadFixture("courses-page1.json"), {
-            linkHeader: `<${url2}>; rel="next"`,
+            linkHeader: `<${teacherUrl2}>; rel="next"`,
           }),
       },
       {
-        url: url2,
+        url: teacherUrl2,
         response: () => rawResponse(loadFixture("courses-page2.json")),
       },
+      { url: TA_URL, response: () => rawResponse("[]") },
     ]);
 
     const fall = await listMyCourses(BASE, TOKEN, "101", {
@@ -177,23 +185,70 @@ describe("listMyCourses", () => {
       code: "CS-101-2025F",
       description: "First course in the CS sequence.",
     });
-    expect(mock.calls).toHaveLength(2);
+    // teacher (page1) → teacher (page2) → ta. Order isn't strict because
+    // the two type-calls go in parallel; assert all three URLs were hit.
+    expect(mock.calls.map((c) => c.url).sort()).toEqual(
+      [TEACHER_URL, teacherUrl2, TA_URL].sort(),
+    );
   });
 
   it("returns empty array when no courses match the requested term", async () => {
-    const url1 =
-      `${BASE}/api/v1/courses?enrollment_state=active&per_page=100` +
-      `&enrollment_role%5B%5D=TeacherEnrollment&enrollment_role%5B%5D=TaEnrollment&include%5B%5D=term`;
     const mock = mockFetch([
       {
-        url: url1,
+        url: TEACHER_URL,
         response: () => rawResponse(loadFixture("courses-page1.json")),
       },
+      { url: TA_URL, response: () => rawResponse("[]") },
     ]);
     const result = await listMyCourses(BASE, TOKEN, "999", {
       fetchImpl: mock.fetchImpl,
     });
     expect(result).toEqual([]);
+  });
+
+  it("merges teacher + ta enrollments and dedupes by external course id", async () => {
+    // A user who is both Teacher and TA on the same course (rare but
+    // legal) should see the course exactly once.
+    const teacherCourse = {
+      id: 5500,
+      name: "Cross-Listed Seminar",
+      course_code: "SEM-500",
+      enrollment_term_id: 101,
+      term: { id: 101, name: "Fall 2025", start_at: null, end_at: null },
+      workflow_state: "available",
+    };
+    const mock = mockFetch([
+      { url: TEACHER_URL, response: () => rawResponse(JSON.stringify([teacherCourse])) },
+      {
+        url: TA_URL,
+        // Same course id appears in TA list too.
+        response: () => rawResponse(JSON.stringify([teacherCourse])),
+      },
+    ]);
+    const out = await listMyCourses(BASE, TOKEN, "101", {
+      fetchImpl: mock.fetchImpl,
+    });
+    expect(out.map((c) => c.external_id)).toEqual(["5500"]);
+  });
+
+  it("regression — does NOT use the array form `enrollment_role[]` that Canvas silently ignores", async () => {
+    // UNI-67 root cause: the deployed adapter sent
+    //   `?enrollment_role[]=TeacherEnrollment&enrollment_role[]=TaEnrollment`
+    // and Canvas's user-scoped /courses returned 200 + [] for the FSU
+    // operator's PAT. This guards us from regressing back to that
+    // shape — the URL must use scalar `enrollment_type`, never an
+    // array role parameter.
+    const mock = mockFetch([
+      { url: TEACHER_URL, response: () => rawResponse("[]") },
+      { url: TA_URL, response: () => rawResponse("[]") },
+    ]);
+    await listMyCourses(BASE, TOKEN, "101", { fetchImpl: mock.fetchImpl });
+    for (const call of mock.calls) {
+      expect(call.url).not.toContain("enrollment_role%5B%5D");
+      expect(call.url).not.toContain("enrollment_role[]");
+      expect(call.url).not.toContain("enrollment_type%5B%5D");
+      expect(call.url).not.toContain("enrollment_type[]");
+    }
   });
 });
 
@@ -387,15 +442,20 @@ describe("listManageableAccounts", () => {
 });
 
 describe("deriveTermsFromCourses", () => {
-  it("dedupes embedded term info across the user's courses", async () => {
-    const url1 =
-      `${BASE}/api/v1/courses?enrollment_state=active&per_page=100` +
-      `&enrollment_role%5B%5D=TeacherEnrollment&enrollment_role%5B%5D=TaEnrollment&include%5B%5D=term`;
+  const TEACHER_URL =
+    `${BASE}/api/v1/courses?enrollment_state=active&enrollment_type=teacher` +
+    `&per_page=100&include%5B%5D=term`;
+  const TA_URL =
+    `${BASE}/api/v1/courses?enrollment_state=active&enrollment_type=ta` +
+    `&per_page=100&include%5B%5D=term`;
+
+  it("dedupes embedded term info across the user's teacher + ta courses", async () => {
     const mock = mockFetch([
       {
-        url: url1,
+        url: TEACHER_URL,
         response: () => rawResponse(loadFixture("courses-page1.json")),
       },
+      { url: TA_URL, response: () => rawResponse("[]") },
     ]);
     const result = await deriveTermsFromCourses(BASE, TOKEN, {
       fetchImpl: mock.fetchImpl,

@@ -128,20 +128,24 @@ describe("CanvasProvider.listTerms", () => {
   });
 
   it("falls back to course-derived terms on 401 (instructor without account scope)", async () => {
-    const url1 =
+    const termsUrl =
       "https://canvas.example.edu/api/v1/accounts/self/terms?per_page=100";
-    const url2 =
-      "https://canvas.example.edu/api/v1/courses?enrollment_state=active&per_page=100" +
-      "&enrollment_role%5B%5D=TeacherEnrollment&enrollment_role%5B%5D=TaEnrollment&include%5B%5D=term";
+    const teacherUrl =
+      "https://canvas.example.edu/api/v1/courses?enrollment_state=active" +
+      "&enrollment_type=teacher&per_page=100&include%5B%5D=term";
+    const taUrl =
+      "https://canvas.example.edu/api/v1/courses?enrollment_state=active" +
+      "&enrollment_type=ta&per_page=100&include%5B%5D=term";
     const mock = mockFetch([
       {
-        url: url1,
+        url: termsUrl,
         response: () => jsonResponse({ errors: ["unauthorized"] }, { status: 401 }),
       },
       {
-        url: url2,
+        url: teacherUrl,
         response: () => rawResponse(loadFixture("courses-page1.json")),
       },
+      { url: taUrl, response: () => rawResponse("[]") },
     ]);
     const provider = new CanvasProvider({ fetchImpl: mock.fetchImpl });
     const terms = await provider.listTerms(CONNECTION);
@@ -177,9 +181,15 @@ describe("CanvasProvider.listMyCourses + listEnrollments", () => {
   const ACCOUNT_COURSES_URL =
     "https://canvas.example.edu/api/v1/accounts/self/courses?enrollment_term_id=101&per_page=100" +
     "&state%5B%5D=created&state%5B%5D=claimed&state%5B%5D=available&state%5B%5D=completed&include%5B%5D=term";
-  const USER_COURSES_URL =
-    "https://canvas.example.edu/api/v1/courses?enrollment_state=active&per_page=100" +
-    "&enrollment_role%5B%5D=TeacherEnrollment&enrollment_role%5B%5D=TaEnrollment&include%5B%5D=term";
+  // User-scoped path: two parallel calls, one per enrollment type. Canvas
+  // ignores the array form `enrollment_type[]`, so we issue them as
+  // separate scalar requests and dedupe (UNI-67).
+  const USER_COURSES_TEACHER_URL =
+    "https://canvas.example.edu/api/v1/courses?enrollment_state=active" +
+    "&enrollment_type=teacher&per_page=100&include%5B%5D=term";
+  const USER_COURSES_TA_URL =
+    "https://canvas.example.edu/api/v1/courses?enrollment_state=active" +
+    "&enrollment_type=ta&per_page=100&include%5B%5D=term";
 
   it("hits the account-scoped courses endpoint first when the token has admin scope", async () => {
     const mock = mockFetch([
@@ -216,29 +226,35 @@ describe("CanvasProvider.listMyCourses + listEnrollments", () => {
           jsonResponse({ errors: ["unauthorized"] }, { status: 401 }),
       },
       {
-        url: USER_COURSES_URL,
+        url: USER_COURSES_TEACHER_URL,
         response: () => rawResponse(loadFixture("courses-page1.json")),
       },
+      { url: USER_COURSES_TA_URL, response: () => rawResponse("[]") },
     ]);
     const provider = new CanvasProvider({ fetchImpl: mock.fetchImpl });
     const courses = await provider.listMyCourses(CONNECTION, "101");
     expect(courses).toHaveLength(2);
-    expect(mock.calls.map((c) => c.url)).toEqual([
-      ACCOUNT_COURSES_URL,
-      USER_COURSES_URL,
-    ]);
+    expect(mock.calls.map((c) => c.url).sort()).toEqual(
+      [ACCOUNT_COURSES_URL, USER_COURSES_TEACHER_URL, USER_COURSES_TA_URL].sort(),
+    );
   });
 
-  it("falls back to the user-scoped endpoint on 403 (admin scope rejected)", async () => {
+  it("falls back to the user-scoped endpoint on 403 (admin scope rejected) — the FSU operator's repro path", async () => {
+    // UNI-67 repro shape: account-scoped /accounts/self/courses returns
+    // 403 because the FSU PAT has no admin scope on the institutional
+    // root. The provider falls through to the user-scoped pair
+    // (teacher + ta), which now use scalar enrollment_type and return
+    // real rows instead of the silent 0/0 the array form produced.
     const mock = mockFetch([
       {
         url: ACCOUNT_COURSES_URL,
         response: () => jsonResponse({ errors: ["forbidden"] }, { status: 403 }),
       },
       {
-        url: USER_COURSES_URL,
+        url: USER_COURSES_TEACHER_URL,
         response: () => rawResponse(loadFixture("courses-page1.json")),
       },
+      { url: USER_COURSES_TA_URL, response: () => rawResponse("[]") },
     ]);
     const provider = new CanvasProvider({ fetchImpl: mock.fetchImpl });
     const courses = await provider.listMyCourses(CONNECTION, "101");
@@ -271,9 +287,12 @@ describe("CanvasProvider.listMyCourses — account discovery fallback (UNI-66)",
   const ACCOUNT_COURSES_ROOT_URL =
     "https://canvas.example.edu/api/v1/accounts/1/courses?enrollment_term_id=245&per_page=100" +
     "&state%5B%5D=created&state%5B%5D=claimed&state%5B%5D=available&state%5B%5D=completed&include%5B%5D=term";
-  const USER_COURSES_URL =
-    "https://canvas.example.edu/api/v1/courses?enrollment_state=active&per_page=100" +
-    "&enrollment_role%5B%5D=TeacherEnrollment&enrollment_role%5B%5D=TaEnrollment&include%5B%5D=term";
+  const USER_COURSES_TEACHER_URL =
+    "https://canvas.example.edu/api/v1/courses?enrollment_state=active" +
+    "&enrollment_type=teacher&per_page=100&include%5B%5D=term";
+  const USER_COURSES_TA_URL =
+    "https://canvas.example.edu/api/v1/courses?enrollment_state=active" +
+    "&enrollment_type=ta&per_page=100&include%5B%5D=term";
 
   it("retries with the institutional root when accounts/self/courses returns 200 + [] (FSU operator repro)", async () => {
     // The exact symptom 1 repro from the UNI-66 bug body: account-scoped
@@ -328,18 +347,22 @@ describe("CanvasProvider.listMyCourses — account discovery fallback (UNI-66)",
       },
       { url: ACCOUNTS_URL, response: () => rawResponse("[]") },
       {
-        url: USER_COURSES_URL,
+        url: USER_COURSES_TEACHER_URL,
         response: () => rawResponse(loadFixture("courses-page1.json")),
       },
+      { url: USER_COURSES_TA_URL, response: () => rawResponse("[]") },
     ]);
     const provider = new CanvasProvider({ fetchImpl: mock.fetchImpl });
     const courses = await provider.listMyCourses(CONNECTION, "101");
     expect(courses).toHaveLength(2);
-    expect(mock.calls.map((c) => c.url)).toEqual([
-      ACCOUNT_COURSES_SELF_TERM_101_URL,
-      ACCOUNTS_URL,
-      USER_COURSES_URL,
-    ]);
+    expect(mock.calls.map((c) => c.url).sort()).toEqual(
+      [
+        ACCOUNT_COURSES_SELF_TERM_101_URL,
+        ACCOUNTS_URL,
+        USER_COURSES_TEACHER_URL,
+        USER_COURSES_TA_URL,
+      ].sort(),
+    );
   });
 
   it("falls back to user-scoped when /accounts itself 401s after empty courses", async () => {
@@ -356,18 +379,22 @@ describe("CanvasProvider.listMyCourses — account discovery fallback (UNI-66)",
         response: () => jsonResponse({ errors: ["unauth"] }, { status: 401 }),
       },
       {
-        url: USER_COURSES_URL,
+        url: USER_COURSES_TEACHER_URL,
         response: () => rawResponse(loadFixture("courses-page1.json")),
       },
+      { url: USER_COURSES_TA_URL, response: () => rawResponse("[]") },
     ]);
     const provider = new CanvasProvider({ fetchImpl: mock.fetchImpl });
     const courses = await provider.listMyCourses(CONNECTION, "101");
     expect(courses).toHaveLength(2);
-    expect(mock.calls.map((c) => c.url)).toEqual([
-      ACCOUNT_COURSES_SELF_TERM_101_URL,
-      ACCOUNTS_URL,
-      USER_COURSES_URL,
-    ]);
+    expect(mock.calls.map((c) => c.url).sort()).toEqual(
+      [
+        ACCOUNT_COURSES_SELF_TERM_101_URL,
+        ACCOUNTS_URL,
+        USER_COURSES_TEACHER_URL,
+        USER_COURSES_TA_URL,
+      ].sort(),
+    );
   });
 
   it("does not invoke discovery when the account-scoped call already returned rows (the common admin path)", async () => {
@@ -384,6 +411,53 @@ describe("CanvasProvider.listMyCourses — account discovery fallback (UNI-66)",
     const courses = await provider.listMyCourses(CONNECTION, "245");
     expect(courses).toHaveLength(2);
     expect(mock.calls).toHaveLength(1);
+  });
+
+  it("returns 4 term-245 teacher courses for the FSU operator's PAT (UNI-67 repro)", async () => {
+    // The exact FSU operator's repro path:
+    //   1. /accounts/self/courses?... → 403 (PAT has no admin scope on
+    //      the institutional root — confirmed against
+    //      https://frostburg.instructure.com).
+    //   2. Fall through to the user-scoped pair (teacher + ta).
+    //   3. /courses?enrollment_type=teacher returns the user's full
+    //      teaching list across all terms (5 courses in this fixture,
+    //      4 of them in term 245).
+    //   4. /courses?enrollment_type=ta returns [] (operator has no
+    //      TA enrollments).
+    //   5. Provider filters client-side to term 245 → 4 courses.
+    //
+    // The pre-fix shape sent `enrollment_role[]=TeacherEnrollment`
+    // (array form), which Canvas's user-scoped /courses silently
+    // ignores — returning [] for the FSU PAT and producing the 0/0
+    // preview the user reported.
+    const ACCOUNT_COURSES_SELF_245 =
+      "https://canvas.example.edu/api/v1/accounts/self/courses?enrollment_term_id=245&per_page=100" +
+      "&state%5B%5D=created&state%5B%5D=claimed&state%5B%5D=available&state%5B%5D=completed&include%5B%5D=term";
+    const mock = mockFetch([
+      {
+        url: ACCOUNT_COURSES_SELF_245,
+        response: () =>
+          jsonResponse({ errors: ["forbidden"] }, { status: 403 }),
+      },
+      {
+        url: USER_COURSES_TEACHER_URL,
+        response: () => rawResponse(loadFixture("courses-fsu-teacher.json")),
+      },
+      { url: USER_COURSES_TA_URL, response: () => rawResponse("[]") },
+    ]);
+    const provider = new CanvasProvider({ fetchImpl: mock.fetchImpl });
+    const courses = await provider.listMyCourses(CONNECTION, "245");
+    expect(courses.map((c) => c.external_id)).toEqual([
+      "33226",
+      "33228",
+      "33230",
+      "33232",
+    ]);
+    // Discovery is NOT consulted in this path — we 403'd straight to
+    // user-scoped, so /accounts must not have been hit.
+    expect(mock.calls.map((c) => c.url)).not.toContain(
+      "https://canvas.example.edu/api/v1/accounts?per_page=100",
+    );
   });
 
   it("returns the empty array unchanged when discovery's root account is also empty (genuinely zero courses for the term)", async () => {

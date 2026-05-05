@@ -310,13 +310,23 @@ function mapCourse(raw: CanvasCourse): LmsCourse | null {
 
 /**
  * GET `/api/v1/courses` for the current user. We pull active courses
- * across the user's teaching enrollments (TeacherEnrollment + TaEnrollment)
- * and filter client-side to the requested term — Canvas does expose an
- * `enrollment_term_id` filter on the endpoint, but only with admin scope,
- * so the client-side filter keeps this working for ordinary instructors.
+ * across the user's teaching enrollments (teacher + ta) and filter
+ * client-side to the requested term — Canvas does expose an
+ * `enrollment_term_id` filter on the endpoint, but it's a no-op for
+ * non-admin tokens (silently ignored, all courses returned), so the
+ * client-side filter is what actually narrows the result.
  *
- * The Canvas response includes `term` only when `include[]=term` is set;
- * we always request it so the term-derivation fallback in
+ * Two server-side calls, one per enrollment type, then dedupe by
+ * external course id. Canvas's user-scoped courses endpoint takes a
+ * SCALAR `enrollment_type` parameter; the array form `enrollment_type[]`
+ * (and likewise `enrollment_role[]`) returns 200 + [] silently, which
+ * was UNI-67's symptom — the FSU operator's PAT got 0/0 because the
+ * deployed adapter sent the array form. See Canvas docs for "List your
+ * courses": both `enrollment_type` and `enrollment_role` are documented
+ * as single-valued.
+ *
+ * `include[]=term` is the one parameter where Canvas does accept array
+ * notation (it's a list of optional embeds); we always request it so
  * `deriveTermsFromCourses` has data to work with.
  *
  * Note: this is the *user-scoped* path. Canvas only returns courses the
@@ -331,27 +341,64 @@ export async function listMyCourses(
   termId: string,
   options: CanvasGetOptions = {},
 ): Promise<LmsCourse[]> {
-  const fetchImpl =
-    options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const all = await fetchUserScopedCourses(baseUrl, accessToken, options);
+  return all.filter((c) => c.external_term_id === termId);
+}
+
+/** Build a URL for the user-scoped courses endpoint scoped to a single
+ *  enrollment type. Canvas only accepts scalar `enrollment_type` here. */
+function buildUserCoursesUrl(
+  baseUrl: string,
+  enrollmentType: "teacher" | "ta",
+): string {
   const params = new URLSearchParams();
   params.set("enrollment_state", "active");
+  params.set("enrollment_type", enrollmentType);
   params.set("per_page", "100");
-  params.append("enrollment_role[]", "TeacherEnrollment");
-  params.append("enrollment_role[]", "TaEnrollment");
   params.append("include[]", "term");
-  const url = `${trimBaseUrl(baseUrl)}/api/v1/courses?${params.toString()}`;
-  const all = await getAllPages<LmsCourse>(
-    url,
-    accessToken,
-    fetchImpl,
-    (body) => {
-      const list = Array.isArray(body) ? (body as CanvasCourse[]) : [];
-      return list
-        .map(mapCourse)
-        .filter((c): c is LmsCourse => c !== null);
-    },
-  );
-  return all.filter((c) => c.external_term_id === termId);
+  return `${trimBaseUrl(baseUrl)}/api/v1/courses?${params.toString()}`;
+}
+
+/** Fetch the user's teacher + TA courses with two server-side calls
+ *  (Canvas only accepts scalar `enrollment_type`), then dedupe by
+ *  external course id. Shared between `listMyCourses` (which then
+ *  filters by term) and `deriveTermsFromCourses` (which extracts the
+ *  embedded term blocks). */
+async function fetchUserScopedCourses(
+  baseUrl: string,
+  accessToken: string,
+  options: CanvasGetOptions,
+): Promise<LmsCourse[]> {
+  const fetchImpl =
+    options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const extract = (body: unknown): LmsCourse[] => {
+    const list = Array.isArray(body) ? (body as CanvasCourse[]) : [];
+    return list
+      .map(mapCourse)
+      .filter((c): c is LmsCourse => c !== null);
+  };
+  const [teacher, ta] = await Promise.all([
+    getAllPages<LmsCourse>(
+      buildUserCoursesUrl(baseUrl, "teacher"),
+      accessToken,
+      fetchImpl,
+      extract,
+    ),
+    getAllPages<LmsCourse>(
+      buildUserCoursesUrl(baseUrl, "ta"),
+      accessToken,
+      fetchImpl,
+      extract,
+    ),
+  ]);
+  const seen = new Set<string>();
+  const merged: LmsCourse[] = [];
+  for (const c of [...teacher, ...ta]) {
+    if (seen.has(c.external_id)) continue;
+    seen.add(c.external_id);
+    merged.push(c);
+  }
+  return merged;
 }
 
 // ---------- Manageable accounts ----------
@@ -467,25 +514,19 @@ export async function listAccountCoursesForTerm(
 
 /** Build an `LmsTerm[]` by deduping the embedded term info on the
  *  user's courses. Used as a fallback when `listTerms` 401s because the
- *  user lacks account admin scope. Same shape contract as `listTerms`. */
-export function deriveTermsFromCourses(
+ *  user lacks account admin scope. Same shape contract as `listTerms`.
+ *
+ *  Mirrors `listMyCourses`'s two-call shape (teacher + ta, scalar
+ *  `enrollment_type` per call) — Canvas ignores the array filter form
+ *  and silently returns []. See `listMyCourses` for the full rationale. */
+export async function deriveTermsFromCourses(
   baseUrl: string,
   accessToken: string,
   options: CanvasGetOptions = {},
 ): Promise<LmsTerm[]> {
-  // We want every active course (across all terms), so we don't filter
-  // by term here. Re-issues the same request as `listMyCourses` but
-  // returns the raw `term` payloads.
   const fetchImpl =
     options.fetchImpl ?? globalThis.fetch.bind(globalThis);
-  const params = new URLSearchParams();
-  params.set("enrollment_state", "active");
-  params.set("per_page", "100");
-  params.append("enrollment_role[]", "TeacherEnrollment");
-  params.append("enrollment_role[]", "TaEnrollment");
-  params.append("include[]", "term");
-  const url = `${trimBaseUrl(baseUrl)}/api/v1/courses?${params.toString()}`;
-  return getAllPages<LmsTerm>(url, accessToken, fetchImpl, (body) => {
+  const extract = (body: unknown): LmsTerm[] => {
     const list = Array.isArray(body) ? (body as CanvasCourse[]) : [];
     const seen = new Map<string, LmsTerm>();
     for (const course of list) {
@@ -501,7 +542,26 @@ export function deriveTermsFromCourses(
       });
     }
     return Array.from(seen.values());
-  });
+  };
+  const [teacherTerms, taTerms] = await Promise.all([
+    getAllPages<LmsTerm>(
+      buildUserCoursesUrl(baseUrl, "teacher"),
+      accessToken,
+      fetchImpl,
+      extract,
+    ),
+    getAllPages<LmsTerm>(
+      buildUserCoursesUrl(baseUrl, "ta"),
+      accessToken,
+      fetchImpl,
+      extract,
+    ),
+  ]);
+  const seen = new Map<string, LmsTerm>();
+  for (const t of [...teacherTerms, ...taTerms]) {
+    if (!seen.has(t.external_id)) seen.set(t.external_id, t);
+  }
+  return Array.from(seen.values());
 }
 
 // ---------- Enrollments ----------
