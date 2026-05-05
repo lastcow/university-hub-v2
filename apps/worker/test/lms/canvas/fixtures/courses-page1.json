@@ -1,0 +1,30 @@
+[
+  {
+    "id": 5001,
+    "name": "Intro to Computer Science",
+    "course_code": "CS-101-2025F",
+    "public_description": "First course in the CS sequence.",
+    "enrollment_term_id": 101,
+    "term": {
+      "id": 101,
+      "name": "Fall 2025",
+      "start_at": "2025-08-25T00:00:00Z",
+      "end_at": "2025-12-15T00:00:00Z"
+    },
+    "workflow_state": "available"
+  },
+  {
+    "id": 5002,
+    "name": "Algorithms",
+    "course_code": "CS-201-2025F",
+    "public_description": null,
+    "enrollment_term_id": 101,
+    "term": {
+      "id": 101,
+      "name": "Fall 2025",
+      "start_at": "2025-08-25T00:00:00Z",
+      "end_at": "2025-12-15T00:00:00Z"
+    },
+    "workflow_state": "available"
+  }
+]

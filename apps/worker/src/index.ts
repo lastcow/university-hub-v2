@@ -1,6 +1,11 @@
 import type { HealthResponse } from "@university-hub/shared";
 
 import type { Env } from "./env.js";
+// Side-effect import: registers the default Canvas provider on the
+// process-wide LMS provider registry (sub-issue UNI-52). Phase-3
+// providers (Blackboard, Moodle, Google Classroom) will register the
+// same way.
+import "./lms/canvas/index.js";
 import { buildContext } from "./middleware/auth.js";
 import {
   applyGenericLimit,
