@@ -19,20 +19,28 @@ import {
   type MailgunVarKey,
   type MailgunVarStatus,
   type MailgunVarStatusEntry,
+  type SystemSettingsResponse,
   type SystemStatusResponse,
   type University,
   type UniversityStatus,
   type SessionUser,
   updateSettingsAccountInputSchema,
   updateSettingsUniversityInputSchema,
+  updateSystemSettingsInputSchema,
 } from "@university-hub/shared";
 
 import { hashPassword, verifyPassword } from "../auth/password.js";
 import { toSessionUser, type UserRow } from "../auth/session.js";
+import { revokeAllTrustedDevicesForUser } from "../auth/trusted-device.js";
 import { execute, queryFirst, type Row } from "../db/index.js";
 import type { Env } from "../env.js";
 import { requireAuth, type RequestContext } from "../middleware/auth.js";
 import { writeAuditLog } from "../services/audit.js";
+import {
+  MFA_TRUSTED_DEVICE_DAYS_KEY,
+  getMfaTrustedDeviceDays,
+  setSystemSettingString,
+} from "../services/system-settings.js";
 import { errorResponse, jsonOk } from "../utils/responses.js";
 
 type UniversityRow = Row & {
@@ -347,6 +355,31 @@ export async function handleUpdateAccountSettings(
     changed.password_changed = true;
   }
 
+  // Password change revokes every trusted-device row for this user
+  // (UNI-47 acceptance: "On any password change OR MFA-secret rotation,
+  // revoke all of the user's trusted devices."). Doing it before the
+  // UPDATE keeps the ordering consistent if the UPDATE somehow fails —
+  // worst case we revoke trust without the password having actually
+  // changed, which is the safer side to err on.
+  let revokedTrustedDevices = 0;
+  if (wantsPasswordChange) {
+    const ids = await revokeAllTrustedDevicesForUser(ctx.env.DB, actor.id);
+    revokedTrustedDevices = ids.length;
+    for (const id of ids) {
+      await writeAuditLog(ctx.env.DB, {
+        action: "mfa.trusted_device_revoked",
+        actorUserId: actor.id,
+        universityId: actor.university_id,
+        entityType: "trusted_device",
+        entityId: id,
+        metadata: { reason: "password_changed", target_user_id: actor.id },
+      });
+    }
+    if (revokedTrustedDevices > 0) {
+      changed.trusted_devices_revoked = revokedTrustedDevices;
+    }
+  }
+
   if (updates.length === 0) {
     const sessionUser: SessionUser = toSessionUser(actor);
     return jsonOk(sessionUser);
@@ -384,4 +417,117 @@ export async function handleUpdateAccountSettings(
 
   const sessionUser: SessionUser = toSessionUser(refreshedRow ?? actor);
   return jsonOk(sessionUser);
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/settings/system
+//
+// Surface for super_admin-editable scalar settings (UNI-47). Today there is
+// only one — `mfa_trusted_device_days` — but the response shape is an
+// object so we can add more without a breaking change.
+//
+// Read is open to super_admin and university_admin so the latter can see
+// the active trust window in their own UI ("Newly-trusted devices last for
+// N days") even though they cannot edit it. Other roles get 403.
+// ---------------------------------------------------------------------------
+
+function canReadSystemSettings(actor: UserRow): boolean {
+  return actor.role === "super_admin" || actor.role === "university_admin";
+}
+
+export async function handleGetSystemSettings(
+  ctx: RequestContext,
+): Promise<Response> {
+  const auth = requireAuth(ctx);
+  if (auth instanceof Response) return auth;
+  if (!canReadSystemSettings(auth.user)) {
+    return errorResponse(
+      403,
+      "forbidden",
+      "You do not have permission to read system settings.",
+    );
+  }
+  const days = await getMfaTrustedDeviceDays(ctx.env.DB);
+  const body: SystemSettingsResponse = {
+    mfa_trusted_device_days: days,
+  };
+  return jsonOk(body);
+}
+
+// ---------------------------------------------------------------------------
+// PATCH /api/settings/system
+//
+// super_admin-only. Reducing the window does NOT retroactively shrink the
+// `expires_at` on existing `trusted_devices` rows; the new value only
+// applies to newly-granted trusts. The PR description / help text on the
+// settings page calls this out so an operator who tightens the window
+// understands why existing devices linger until their natural expiry.
+// ---------------------------------------------------------------------------
+
+export async function handleUpdateSystemSettings(
+  ctx: RequestContext,
+): Promise<Response> {
+  const auth = requireAuth(ctx);
+  if (auth instanceof Response) return auth;
+  const actor = auth.user;
+  if (actor.role !== "super_admin") {
+    await writeAuditLog(ctx.env.DB, {
+      action: "settings.updated",
+      actorUserId: actor.id,
+      universityId: actor.university_id,
+      entityType: "system",
+      entityId: null,
+      metadata: { scope: "system", denied: true, reason: "forbidden" },
+    });
+    return errorResponse(
+      403,
+      "forbidden",
+      "Only super administrators can edit system settings.",
+    );
+  }
+
+  const raw = await readJson(ctx.request);
+  const parsed = updateSystemSettingsInputSchema.safeParse(raw);
+  if (!parsed.success) {
+    return errorResponse(
+      400,
+      "invalid_request",
+      "Invalid system-settings payload.",
+      { issues: parsed.error.flatten().fieldErrors },
+    );
+  }
+
+  const changed: Record<string, unknown> = {};
+  if (parsed.data.mfa_trusted_device_days !== undefined) {
+    const previous = await getMfaTrustedDeviceDays(ctx.env.DB);
+    if (previous !== parsed.data.mfa_trusted_device_days) {
+      await setSystemSettingString(
+        ctx.env.DB,
+        MFA_TRUSTED_DEVICE_DAYS_KEY,
+        String(parsed.data.mfa_trusted_device_days),
+        actor.id,
+      );
+      changed.mfa_trusted_device_days = {
+        from: previous,
+        to: parsed.data.mfa_trusted_device_days,
+      };
+    }
+  }
+
+  if (Object.keys(changed).length > 0) {
+    await writeAuditLog(ctx.env.DB, {
+      action: "settings.updated",
+      actorUserId: actor.id,
+      universityId: actor.university_id,
+      entityType: "system",
+      entityId: null,
+      metadata: { scope: "system", changed },
+    });
+  }
+
+  const days = await getMfaTrustedDeviceDays(ctx.env.DB);
+  const body: SystemSettingsResponse = {
+    mfa_trusted_device_days: days,
+  };
+  return jsonOk(body);
 }

@@ -11,6 +11,13 @@ APP_BASE_URL=http://localhost:5173
 SESSION_COOKIE_NAME=university_hub_session
 SESSION_SECRET=replace-with-local-secret
 
+# Cookie name for the long-lived "Remember this device" trusted-device
+# cookie issued after a successful TOTP challenge for university_admin
+# (UNI-47). Defaults to "university_hub_device_trust" when unset. The
+# cookie is HttpOnly and HMAC'd with SESSION_SECRET; the trust window
+# is configurable at runtime via PATCH /api/settings/system.
+# TRUSTED_DEVICE_COOKIE_NAME=university_hub_device_trust
+
 # Session lifecycle (UNI-26). Defaults apply when unset:
 #   SESSION_IDLE_TIMEOUT_SECONDS     30 min (1800)
 #   SESSION_ABSOLUTE_TIMEOUT_SECONDS 12 h   (43200)

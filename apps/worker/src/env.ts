@@ -45,6 +45,13 @@ export interface Env {
   // (UNI-24). Defaults to "university_hub_mfa_challenge" if unset.
   MFA_CHALLENGE_COOKIE_NAME?: string;
 
+  // Cookie name for the long-lived "Remember this device" trusted-device
+  // cookie issued after a successful TOTP challenge (UNI-47). Defaults to
+  // "university_hub_device_trust" if unset. The cookie is HttpOnly,
+  // signed/HMAC'd via SESSION_SECRET (the cookie value IS the bearer
+  // token; the keyed hash sits in `trusted_devices.token_hash`).
+  TRUSTED_DEVICE_COOKIE_NAME?: string;
+
   // Mailgun (UNI-9). Secrets in production, placeholders in `.dev.vars`.
   // Missing key/domain short-circuits the email service to a "not configured"
   // failure rather than crashing — see services/mail/mailgun.ts.

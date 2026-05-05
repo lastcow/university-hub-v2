@@ -29,6 +29,11 @@ import {
   deleteSessionByToken,
   toSessionUser,
 } from "../auth/session.js";
+import {
+  deleteTrustedDeviceById,
+  resolveTrustedDeviceByToken,
+  touchTrustedDeviceLastUsed,
+} from "../auth/trusted-device.js";
 import { execute, queryFirst } from "../db/index.js";
 import type { RequestContext } from "../middleware/auth.js";
 import {
@@ -46,12 +51,72 @@ import {
   buildSessionSetCookie,
 } from "../utils/cookies.js";
 import { errorResponse, jsonOk } from "../utils/responses.js";
+import { trustedDeviceCookieName } from "./trusted-devices.js";
 
 const MIN_PASSWORD_LENGTH = 8;
 const INVALID_CREDENTIALS = "Invalid email or password.";
 
 function sessionCookieName(ctx: RequestContext): string {
   return ctx.env.SESSION_COOKIE_NAME || "university_hub_session";
+}
+
+/**
+ * Trusted-device MFA bypass check (UNI-47). Returns true iff every gate
+ * passes:
+ *   - The user's role is exactly `university_admin`. `super_admin` is
+ *     always-MFA and never eligible; the bypass is also gated by
+ *     `roleRequiresMfa(user.role)` at the call site so non-MFA roles
+ *     never hit this path.
+ *   - A `device_trust` cookie is present on the request.
+ *   - The cookie hashes (via HMAC keyed by `SESSION_SECRET`) to a row in
+ *     `trusted_devices` whose `expires_at` is still in the future.
+ *   - The row's `ip_address` exactly matches the current request IP.
+ *
+ * On success the row's `last_used_at` is bumped and an audit row of
+ * `mfa.bypassed_via_trusted_device` is written. The caller falls through
+ * to the regular session-issuance path.
+ *
+ * If a cookie is present but does NOT satisfy every gate, the row (if
+ * any) is left untouched and the caller still issues an MFA challenge —
+ * but a row whose IP failed to match is deliberately NOT deleted, since
+ * the user might be roaming and a valid TOTP confirms they are who they
+ * say they are. The cookie itself doesn't get cleared either; the next
+ * sign-in will simply re-prompt and re-set the trust state.
+ */
+async function tryTrustedDeviceBypass(
+  ctx: RequestContext,
+  user: MfaUserRow,
+  requestIp: string,
+): Promise<boolean> {
+  if (user.role !== "university_admin") return false;
+  const cookieName = trustedDeviceCookieName(ctx.env);
+  const token = ctx.cookies[cookieName];
+  if (!token) return false;
+  const row = await resolveTrustedDeviceByToken(ctx.env, token);
+  if (!row) return false;
+  if (row.user_id !== user.id) {
+    // Cookie was issued for a different user (e.g. shared device). Drop
+    // the row defensively — letting it linger would let an attacker who
+    // stole one user's device cookie pretend to be a different
+    // university_admin who happens to be signing in from the same IP.
+    await deleteTrustedDeviceById(ctx.env.DB, row.id);
+    return false;
+  }
+  if (row.ip_address !== requestIp) return false;
+
+  await touchTrustedDeviceLastUsed(ctx.env.DB, row.id);
+  await writeAuditLog(ctx.env.DB, {
+    action: "mfa.bypassed_via_trusted_device",
+    actorUserId: user.id,
+    universityId: user.university_id,
+    entityType: "trusted_device",
+    entityId: row.id,
+    metadata: {
+      ip_match: true,
+      role: user.role,
+    },
+  });
+  return true;
 }
 
 async function readJson(request: Request): Promise<unknown> {
@@ -143,13 +208,30 @@ export async function handleSignIn(ctx: RequestContext): Promise<Response> {
   // MFA gate: if the role requires it, hand off to the challenge flow
   // instead of issuing a session. The actual `auth.sign_in` audit row is
   // written when the session is finally created in routes/mfa.ts.
+  //
+  // Trusted-device bypass (UNI-47): if the role is `university_admin`
+  // (and ONLY that role — `super_admin` is always-MFA), and the request
+  // carries a valid `device_trust` cookie that hashes to a non-expired
+  // row whose `ip_address` matches the current request IP, then the MFA
+  // challenge is skipped and a session is issued directly. Anything that
+  // doesn't satisfy all three conditions falls through to the regular
+  // TOTP flow.
   if (roleRequiresMfa(user.role)) {
-    const challenge = await issueMfaChallenge(ctx, user);
-    const body: SignInResponse = {
-      status: "mfa_required",
-      mfa_enrolled: challenge.enrolled,
-    };
-    return jsonOk(body, { headers: { "set-cookie": challenge.setCookie } });
+    const bypass = await tryTrustedDeviceBypass(ctx, user, ip);
+    if (!bypass) {
+      const challenge = await issueMfaChallenge(ctx, user);
+      const body: SignInResponse = {
+        status: "mfa_required",
+        mfa_enrolled: challenge.enrolled,
+        // UNI-47: only `university_admin` is eligible for the trusted-
+        // device bypass. `super_admin` is always-MFA — surfaced here so
+        // the SPA can hide the "Remember this device" checkbox for
+        // super_admin sign-ins.
+        trusted_device_eligible: user.role === "university_admin",
+      };
+      return jsonOk(body, { headers: { "set-cookie": challenge.setCookie } });
+    }
+    // Bypass took effect — fall through to the session-issuance path below.
   }
 
   const userAgent = ctx.request.headers.get("user-agent");

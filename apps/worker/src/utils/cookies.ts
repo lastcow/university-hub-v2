@@ -108,3 +108,21 @@ export function buildMfaChallengeSetCookie(
 export function buildMfaChallengeClearCookie(env: Env, name: string): string {
   return buildSessionClearCookie(env, name);
 }
+
+/**
+ * "Remember this device" cookie issued after a successful TOTP challenge
+ * for a `university_admin` who ticked the checkbox (UNI-47). Lifetime is
+ * capped by the configured `mfa_trusted_device_days` setting; the same
+ * cross-site SameSite/Secure rules apply as the session cookie since the
+ * SPA needs to send it on the next sign-in fetch from the Pages origin.
+ */
+export function buildTrustedDeviceSetCookie(
+  env: Env,
+  options: { name: string; value: string; expires: Date },
+): string {
+  return buildSessionSetCookie(env, options);
+}
+
+export function buildTrustedDeviceClearCookie(env: Env, name: string): string {
+  return buildSessionClearCookie(env, name);
+}

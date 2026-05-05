@@ -58,6 +58,10 @@ import {
 import { verifyPassword } from "../auth/password.js";
 import { createSession, toSessionUser, type UserRow } from "../auth/session.js";
 import {
+  createTrustedDevice,
+  revokeAllTrustedDevicesForUser,
+} from "../auth/trusted-device.js";
+import {
   buildOtpAuthUrl,
   generateTotpSecret,
   verifyTotpCode,
@@ -67,15 +71,19 @@ import type { Env } from "../env.js";
 import type { RequestContext } from "../middleware/auth.js";
 import {
   bySession,
+  clientIpFromCtx,
   mfaChallengeLimit,
   rateLimitedResponse,
 } from "../middleware/rate-limit.js";
 import { writeAuditLog } from "../services/audit.js";
+import { getMfaTrustedDeviceDays } from "../services/system-settings.js";
 import {
   buildMfaChallengeClearCookie,
   buildSessionSetCookie,
+  buildTrustedDeviceSetCookie,
 } from "../utils/cookies.js";
 import { errorResponse, jsonOk } from "../utils/responses.js";
+import { trustedDeviceCookieName } from "./trusted-devices.js";
 
 const SESSION_COOKIE_DEFAULT = "university_hub_session";
 const MFA_CHALLENGE_COOKIE_DEFAULT = "university_hub_mfa_challenge";
@@ -458,8 +466,71 @@ export async function handleMfaChallenge(
     buildMfaChallengeClearCookie(ctx.env, mfaChallengeCookieName(ctx.env)),
   );
 
+  // Trusted-device grant (UNI-47). Honored only when the user is
+  // university_admin AND ticked "Remember this device" — super_admin is
+  // always-MFA, and TOTP enrollment / first-time verify-enroll never
+  // grants trust (the user re-MFAs once on the next sign-in by design).
+  // Grant happens after the row was matched by TOTP; recovery-code
+  // success is intentionally NOT eligible to grant trust because
+  // recovery codes are an account-recovery surface, not a "this device
+  // is mine" assertion.
+  if (
+    parsed.data.remember_device === true &&
+    !usedRecovery &&
+    user.role === "university_admin"
+  ) {
+    const trustCookie = await grantTrustedDevice(ctx, user);
+    if (trustCookie) appendCookie(headers, trustCookie);
+  }
+
   const body: MfaVerifyResponse = { user: sessionUser };
   return jsonOk(body, { headers });
+}
+
+/**
+ * Mint a `trusted_devices` row + signed cookie for the verifying user.
+ * Returns the `Set-Cookie` header value the caller should append to the
+ * response, or `null` if the gate fails (the gate is also enforced by
+ * the call site, but we double-check defensively here so this helper
+ * cannot accidentally grant trust to `super_admin`).
+ *
+ * Audit row: `mfa.trusted_device_granted` with the row id, the configured
+ * trust window in days, and the request IP — useful for the audit-logs
+ * admin page filter when investigating a suspicious bypass.
+ */
+async function grantTrustedDevice(
+  ctx: RequestContext,
+  user: MfaUserRow,
+): Promise<string | null> {
+  if (user.role !== "university_admin") return null;
+  const ip = clientIpFromCtx(ctx);
+  const userAgent = ctx.request.headers.get("user-agent");
+  const trustWindowDays = await getMfaTrustedDeviceDays(ctx.env.DB);
+
+  const created = await createTrustedDevice(ctx.env, {
+    userId: user.id,
+    ipAddress: ip,
+    userAgent,
+    trustWindowDays,
+  });
+
+  await writeAuditLog(ctx.env.DB, {
+    action: "mfa.trusted_device_granted",
+    actorUserId: user.id,
+    universityId: user.university_id,
+    entityType: "trusted_device",
+    entityId: created.id,
+    metadata: {
+      trust_window_days: trustWindowDays,
+      role: user.role,
+    },
+  });
+
+  return buildTrustedDeviceSetCookie(ctx.env, {
+    name: trustedDeviceCookieName(ctx.env),
+    value: created.token,
+    expires: created.expiresAt,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -616,6 +687,17 @@ export async function handleMfaDisable(
   );
   await deleteAllMfaChallengesForUser(ctx.env.DB, user.id);
 
+  // MFA secret rotation revokes every trusted-device row for this user
+  // (UNI-47). Trust grants imply "this device passed TOTP under THE
+  // current secret"; if the secret has been rotated out, the trust no
+  // longer means anything and must be re-earned on the next sign-in.
+  await revokeTrustedDevicesAndAudit(
+    ctx,
+    user.id,
+    user.university_id,
+    "mfa_disabled",
+  );
+
   await writeAuditLog(ctx.env.DB, {
     action: "mfa.disabled",
     actorUserId: user.id,
@@ -625,6 +707,33 @@ export async function handleMfaDisable(
   });
 
   return jsonOk({ ok: true } as const);
+}
+
+/**
+ * Revoke every trusted-device row for `userId` and emit one audit row per
+ * deletion. Used by the password-change, MFA-disable, and admin-revoke-
+ * all paths so the side effect is consistent across surfaces. The
+ * `reason` is captured in metadata so audit-log readers can tell why a
+ * sweep happened ("password_changed" vs "mfa_disabled" vs "admin_revoke").
+ */
+export async function revokeTrustedDevicesAndAudit(
+  ctx: RequestContext,
+  userId: string,
+  universityId: string | null,
+  reason: string,
+): Promise<number> {
+  const ids = await revokeAllTrustedDevicesForUser(ctx.env.DB, userId);
+  for (const id of ids) {
+    await writeAuditLog(ctx.env.DB, {
+      action: "mfa.trusted_device_revoked",
+      actorUserId: ctx.auth?.user.id ?? userId,
+      universityId,
+      entityType: "trusted_device",
+      entityId: id,
+      metadata: { reason, target_user_id: userId },
+    });
+  }
+  return ids.length;
 }
 
 // ---------------------------------------------------------------------------

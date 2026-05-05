@@ -11,7 +11,20 @@ import type { SessionUser } from "./user.js";
  */
 export type SignInResponse =
   | { status: "ok"; user: SessionUser }
-  | { status: "mfa_required"; mfa_enrolled: boolean };
+  | {
+      status: "mfa_required";
+      mfa_enrolled: boolean;
+      /**
+       * UNI-47: surfaces whether the user is eligible for the
+       * "Remember this device" trusted-device bypass. True only for
+       * `university_admin`. `super_admin` is always-MFA and always
+       * false; non-MFA roles never see this response. The SPA uses
+       * this to decide whether to render the checkbox on the MFA
+       * challenge page. The user's role itself is not surfaced —
+       * just the eligibility flag.
+       */
+      trusted_device_eligible: boolean;
+    };
 
 /**
  * Returned by `POST /api/auth/mfa/enroll`. The raw secret + recovery codes

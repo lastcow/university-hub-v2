@@ -19,8 +19,14 @@ export function verifyMfaEnrollment(code: string): Promise<MfaVerifyResponse> {
   return api.post<MfaVerifyResponse>("/api/auth/mfa/verify-enroll", { code });
 }
 
-export function submitMfaChallenge(code: string): Promise<MfaVerifyResponse> {
-  return api.post<MfaVerifyResponse>("/api/auth/mfa/challenge", { code });
+export function submitMfaChallenge(
+  code: string,
+  options: { rememberDevice?: boolean } = {},
+): Promise<MfaVerifyResponse> {
+  return api.post<MfaVerifyResponse>("/api/auth/mfa/challenge", {
+    code,
+    remember_device: options.rememberDevice ?? false,
+  });
 }
 
 export function getMfaStatus(signal?: AbortSignal): Promise<MfaStatusResponse> {
