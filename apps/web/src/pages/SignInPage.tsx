@@ -44,6 +44,10 @@ export function SignInPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // UNI-47: surfaced from the sign-in response. True only when the user
+  // who supplied valid credentials is a `university_admin`. Drives the
+  // "Remember this device" checkbox visibility on the challenge step.
+  const [trustedDeviceEligible, setTrustedDeviceEligible] = useState(false);
 
   const fromState = (location.state as LocationState | null)?.from;
   const fallback = user ? defaultDashboardForRole(user.role) : "/app/dashboard";
@@ -76,6 +80,7 @@ export function SignInPage() {
       // appropriate step. The user object is not in `next` until MFA is
       // verified — we don't know their role yet, but goAfterSignIn will be
       // called from the MFA step using the SessionUser returned there.
+      setTrustedDeviceEligible(next.trusted_device_eligible);
       setStep(next.mfa_enrolled ? "mfa-challenge" : "mfa-enroll");
     } catch (cause) {
       if (cause instanceof ApiClientError) {
@@ -129,6 +134,7 @@ export function SignInPage() {
               setError(null);
             }}
             setSessionUser={setSessionUser}
+            trustedDeviceEligible={trustedDeviceEligible}
           />
         )}
 
@@ -435,13 +441,20 @@ function MfaChallengeStep({
   onVerified,
   onBack,
   setSessionUser,
+  trustedDeviceEligible,
 }: {
   onVerified: (role: string) => void;
   onBack: () => void;
   setSessionUser: ReturnType<typeof useAuth>["setSessionUser"];
+  trustedDeviceEligible: boolean;
 }) {
   const [code, setCode] = useState("");
   const [usingRecovery, setUsingRecovery] = useState(false);
+  // UNI-47: "Remember this device for N days" checkbox. Default
+  // unchecked per the issue — the user has to opt in. Hidden when the
+  // user is not eligible (super_admin, today the only ineligible MFA
+  // role) so super_admin sign-ins never carry the option.
+  const [rememberDevice, setRememberDevice] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -450,7 +463,15 @@ function MfaChallengeStep({
     setError(null);
     setSubmitting(true);
     try {
-      const verified = await submitMfaChallenge(code);
+      // Recovery codes are intentionally NOT eligible to grant trust on
+      // the backend — they are an account-recovery surface, not a
+      // "this device is mine" assertion. The checkbox is also hidden
+      // when the user toggles to recovery mode, but we belt-and-
+      // suspenders the `remember_device` flag here too.
+      const verified = await submitMfaChallenge(code, {
+        rememberDevice:
+          trustedDeviceEligible && !usingRecovery && rememberDevice,
+      });
       setSessionUser(verified.user);
       onVerified(verified.user.role);
     } catch (cause) {
@@ -502,6 +523,27 @@ function MfaChallengeStep({
           )}
         />
       </div>
+
+      {trustedDeviceEligible && !usingRecovery ? (
+        <label
+          className="flex items-start gap-2 text-xs text-muted-foreground"
+          htmlFor="mfa-remember-device"
+        >
+          <input
+            id="mfa-remember-device"
+            type="checkbox"
+            checked={rememberDevice}
+            onChange={(e) => setRememberDevice(e.target.checked)}
+            disabled={submitting}
+            className="mt-0.5 h-4 w-4 rounded border border-input"
+          />
+          <span>
+            Remember this device. Skip the verification code on future
+            sign-ins from this browser and IP. Use only on devices you
+            trust.
+          </span>
+        </label>
+      ) : null}
 
       {error ? (
         <div

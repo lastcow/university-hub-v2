@@ -15,8 +15,10 @@ import type { Env } from "../../src/env.js";
 import type { AuthState, RequestContext } from "../../src/middleware/auth.js";
 import {
   handleGetMailgunStatus,
+  handleGetSystemSettings,
   handleGetSystemStatus,
   handleUpdateAccountSettings,
+  handleUpdateSystemSettings,
   handleUpdateUniversitySettings,
 } from "../../src/routes/settings.js";
 import { ProgrammableD1 } from "../helpers/programmable-d1.js";
@@ -366,5 +368,218 @@ describe("PATCH /api/settings/account — password verification", () => {
     );
     expect(res.status).toBe(400);
     expect(db.updates("users").length).toBe(0);
+  });
+
+  it("UNI-47: password change revokes the user's trusted devices and audits per row", async () => {
+    const db = makeUniDb();
+    // Seed two trusted-device rows for the actor.
+    db.onAll((sql, params) => {
+      if (
+        sql.includes("FROM trusted_devices") &&
+        sql.includes("user_id = ?") &&
+        params[0] === STUDENT_ID
+      ) {
+        return [{ id: "td-1" }, { id: "td-2" }];
+      }
+      return undefined;
+    });
+
+    const passwordHash = await hashPassword("correct-horse");
+    const res = await handleUpdateAccountSettings(
+      ctxWith(CONFIGURED_ENV, db, {
+        id: STUDENT_ID,
+        role: "student",
+        university_id: UNI_A,
+        password_hash: passwordHash,
+      }, {
+        method: "PATCH",
+        body: {
+          current_password: "correct-horse",
+          new_password: "battery-staple",
+        },
+      }),
+    );
+    expect(res.status).toBe(200);
+    // The bulk DELETE for trusted-device rows ran.
+    const bulkDelete = db.executions.filter((e) =>
+      /^DELETE FROM trusted_devices WHERE user_id = \?/i.test(e.sql),
+    );
+    expect(bulkDelete.length).toBe(1);
+    // One audit row per revoked trusted device, plus the settings.updated row.
+    const audits = db.inserts("audit_logs");
+    const revokeAudits = audits.filter(
+      (e) => e.params[3] === "mfa.trusted_device_revoked",
+    );
+    expect(revokeAudits.length).toBe(2);
+    for (const row of revokeAudits) {
+      expect(String(row.params[6])).toContain('"reason":"password_changed"');
+    }
+    const settingsAudits = audits.filter(
+      (e) => e.params[3] === "settings.updated",
+    );
+    expect(settingsAudits.length).toBe(1);
+  });
+
+  it("UNI-47: name-only update does NOT revoke trusted devices", async () => {
+    const db = makeUniDb();
+    db.onAll((sql, params) => {
+      if (
+        sql.includes("FROM trusted_devices") &&
+        sql.includes("user_id = ?") &&
+        params[0] === STUDENT_ID
+      ) {
+        return [{ id: "td-1" }];
+      }
+      return undefined;
+    });
+
+    const passwordHash = await hashPassword("correct-horse");
+    const res = await handleUpdateAccountSettings(
+      ctxWith(CONFIGURED_ENV, db, {
+        id: STUDENT_ID,
+        role: "student",
+        university_id: UNI_A,
+        password_hash: passwordHash,
+        name: "Old Name",
+      }, {
+        method: "PATCH",
+        body: { name: "New Name" },
+      }),
+    );
+    expect(res.status).toBe(200);
+    const bulkDelete = db.executions.filter((e) =>
+      /^DELETE FROM trusted_devices WHERE user_id = \?/i.test(e.sql),
+    );
+    expect(bulkDelete.length).toBe(0);
+    const audits = db.inserts("audit_logs");
+    expect(
+      audits.filter((e) => e.params[3] === "mfa.trusted_device_revoked").length,
+    ).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UNI-47: System settings RBAC + side effects
+// ---------------------------------------------------------------------------
+
+describe("/api/settings/system — UNI-47", () => {
+  function makeSystemDb(initialDays: string = "30"): ProgrammableD1 {
+    const db = new ProgrammableD1();
+    let value = initialDays;
+    db.onFirst((sql, params) => {
+      if (sql.startsWith("SELECT 1 AS ok")) return { ok: 1 };
+      if (sql.includes("FROM system_settings") && sql.includes("WHERE key = ?")) {
+        if (params[0] === "mfa_trusted_device_days") {
+          return { key: "mfa_trusted_device_days", value };
+        }
+        return null;
+      }
+      return undefined;
+    });
+    db.onWrite((sql, params) => {
+      const lower = sql.toLowerCase();
+      if (lower.startsWith("insert into system_settings")) {
+        // Param order: key, value, updated_by_user_id, created_at, updated_at
+        if (params[0] === "mfa_trusted_device_days") {
+          value = String(params[1]);
+        }
+      }
+    });
+    return db;
+  }
+
+  it("GET 200 for super_admin and university_admin; 403 otherwise", async () => {
+    const db = makeSystemDb();
+    const okSuper = await handleGetSystemSettings(
+      ctxWith(CONFIGURED_ENV, db, { id: SUPER_ADMIN_ID, role: "super_admin" }),
+    );
+    expect(okSuper.status).toBe(200);
+    const okUni = await handleGetSystemSettings(
+      ctxWith(CONFIGURED_ENV, db, {
+        id: UNI_ADMIN_ID,
+        role: "university_admin",
+        university_id: UNI_A,
+      }),
+    );
+    expect(okUni.status).toBe(200);
+    const denied = await handleGetSystemSettings(
+      ctxWith(CONFIGURED_ENV, db, {
+        id: STUDENT_ID,
+        role: "student",
+      }),
+    );
+    expect(denied.status).toBe(403);
+  });
+
+  it("PATCH refuses university_admin even on its own university (super_admin only)", async () => {
+    const db = makeSystemDb();
+    const res = await handleUpdateSystemSettings(
+      ctxWith(CONFIGURED_ENV, db, {
+        id: UNI_ADMIN_ID,
+        role: "university_admin",
+        university_id: UNI_A,
+      }, {
+        method: "PATCH",
+        body: { mfa_trusted_device_days: 7 },
+      }),
+    );
+    expect(res.status).toBe(403);
+    // Audit row recorded the denial.
+    const audits = db.inserts("audit_logs");
+    expect(audits.length).toBe(1);
+    expect(audits[0]!.params[3]).toBe("settings.updated");
+    const meta = JSON.parse(String(audits[0]!.params[6])) as {
+      denied?: boolean;
+      scope?: string;
+    };
+    expect(meta.denied).toBe(true);
+    expect(meta.scope).toBe("system");
+  });
+
+  it("PATCH succeeds for super_admin and audits with from/to", async () => {
+    const db = makeSystemDb("30");
+    const res = await handleUpdateSystemSettings(
+      ctxWith(CONFIGURED_ENV, db, {
+        id: SUPER_ADMIN_ID,
+        role: "super_admin",
+      }, {
+        method: "PATCH",
+        body: { mfa_trusted_device_days: 14 },
+      }),
+    );
+    expect(res.status).toBe(200);
+    const audits = db.inserts("audit_logs");
+    const settingsAudits = audits.filter(
+      (e) => e.params[3] === "settings.updated",
+    );
+    expect(settingsAudits.length).toBe(1);
+    const meta = JSON.parse(String(settingsAudits[0]!.params[6])) as {
+      changed?: { mfa_trusted_device_days?: { from: number; to: number } };
+    };
+    expect(meta.changed?.mfa_trusted_device_days).toEqual({ from: 30, to: 14 });
+  });
+
+  it("PATCH rejects out-of-range values (zod min/max)", async () => {
+    const db = makeSystemDb();
+    const tooLow = await handleUpdateSystemSettings(
+      ctxWith(CONFIGURED_ENV, db, {
+        id: SUPER_ADMIN_ID,
+        role: "super_admin",
+      }, {
+        method: "PATCH",
+        body: { mfa_trusted_device_days: 0 },
+      }),
+    );
+    expect(tooLow.status).toBe(400);
+    const tooHigh = await handleUpdateSystemSettings(
+      ctxWith(CONFIGURED_ENV, db, {
+        id: SUPER_ADMIN_ID,
+        role: "super_admin",
+      }, {
+        method: "PATCH",
+        body: { mfa_trusted_device_days: 999 },
+      }),
+    );
+    expect(tooHigh.status).toBe(400);
   });
 });

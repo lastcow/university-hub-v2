@@ -130,10 +130,19 @@ import {
 } from "./routes/teachers.js";
 import {
   handleGetMailgunStatus,
+  handleGetSystemSettings,
   handleGetSystemStatus,
   handleUpdateAccountSettings,
+  handleUpdateSystemSettings,
   handleUpdateUniversitySettings,
 } from "./routes/settings.js";
+import {
+  handleAdminListTrustedDevices,
+  handleAdminRevokeAllTrustedDevices,
+  handleListTrustedDevices,
+  handleRevokeAllTrustedDevices,
+  handleRevokeTrustedDevice,
+} from "./routes/trusted-devices.js";
 import {
   handleCreateUniversity,
   handleGetUniversity,
@@ -185,6 +194,10 @@ const TEACHER_ID_RE =
 const TEACHER_ASSISTANT_ID_RE =
   /^\/api\/teacher-assistants\/([0-9a-fA-F-]{36})(?:\/(courses))?\/?$/;
 const SESSION_ID_RE = /^\/api\/auth\/sessions\/([0-9a-fA-F-]{36})\/?$/;
+const TRUSTED_DEVICE_ID_RE =
+  /^\/api\/auth\/trusted-devices\/([0-9a-fA-F-]{36})\/?$/;
+const USER_TRUSTED_DEVICES_RE =
+  /^\/api\/users\/([0-9a-fA-F-]{36})\/trusted-devices(?:\/(revoke-all))?\/?$/;
 const LEGAL_KIND_RE = /^\/api\/legal\/(terms|privacy)\/?$/;
 const LEGAL_ADMIN_KIND_RE = /^\/api\/legal\/admin\/(terms|privacy)\/?$/;
 const ESCALATION_CONTACT_RE = /^\/api\/escalation-contacts\/([a-z_]+)\/?$/;
@@ -373,6 +386,39 @@ async function routeApi(
       return handleRevokeSession(ctx, sessionMatch[1] as string);
     }
 
+    // Trusted-device management surface (UNI-47). Static `/revoke-all`
+    // first so the per-id regex doesn't try to interpret it as a UUID.
+    if (
+      url.pathname === "/api/auth/trusted-devices" &&
+      request.method === "GET"
+    ) {
+      return handleListTrustedDevices(ctx);
+    }
+    if (
+      url.pathname === "/api/auth/trusted-devices/revoke-all" &&
+      request.method === "POST"
+    ) {
+      return handleRevokeAllTrustedDevices(ctx);
+    }
+    const trustedDeviceMatch = TRUSTED_DEVICE_ID_RE.exec(url.pathname);
+    if (trustedDeviceMatch && request.method === "DELETE") {
+      return handleRevokeTrustedDevice(
+        ctx,
+        trustedDeviceMatch[1] as string,
+      );
+    }
+    const userTrustedDevicesMatch = USER_TRUSTED_DEVICES_RE.exec(url.pathname);
+    if (userTrustedDevicesMatch) {
+      const targetUserId = userTrustedDevicesMatch[1] as string;
+      const sub = userTrustedDevicesMatch[2];
+      if (!sub && request.method === "GET") {
+        return handleAdminListTrustedDevices(ctx, targetUserId);
+      }
+      if (sub === "revoke-all" && request.method === "POST") {
+        return handleAdminRevokeAllTrustedDevices(ctx, targetUserId);
+      }
+    }
+
     if (url.pathname === "/api/dashboard/summary" && request.method === "GET") {
       return handleDashboardSummary(ctx);
     }
@@ -405,6 +451,17 @@ async function routeApi(
       request.method === "PATCH"
     ) {
       return handleUpdateAccountSettings(ctx);
+    }
+    // System settings (UNI-47). Read for super_admin / university_admin;
+    // edit for super_admin only.
+    if (url.pathname === "/api/settings/system" && request.method === "GET") {
+      return handleGetSystemSettings(ctx);
+    }
+    if (
+      url.pathname === "/api/settings/system" &&
+      request.method === "PATCH"
+    ) {
+      return handleUpdateSystemSettings(ctx);
     }
 
     // Privacy policy + ToS surfaces (UNI-34). Static admin paths (and the

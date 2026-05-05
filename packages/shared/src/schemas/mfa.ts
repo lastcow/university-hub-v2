@@ -24,6 +24,10 @@ export type MfaVerifyEnrollInput = z.infer<typeof mfaVerifyEnrollInputSchema>;
  * `code` is either a 6-digit TOTP or a recovery code (single-use). The
  * server tries TOTP first, falls back to recovery, never reveals which
  * format was attempted.
+ *
+ * `remember_device` (UNI-47) is the "Remember this device for N days"
+ * checkbox on the challenge page. Honored only for `university_admin`
+ * users (the bypass does not apply to `super_admin`); ignored otherwise.
  */
 export const mfaChallengeInputSchema = z.object({
   code: z
@@ -31,6 +35,7 @@ export const mfaChallengeInputSchema = z.object({
     .trim()
     .min(6, "Enter your 6-digit code or a recovery code")
     .max(64),
+  remember_device: z.boolean().optional(),
 });
 export type MfaChallengeInput = z.infer<typeof mfaChallengeInputSchema>;
 

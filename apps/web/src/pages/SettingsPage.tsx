@@ -40,8 +40,12 @@ import type {
   MailgunStatusResponse,
   MailgunVarStatusEntry,
   MfaStatusResponse,
+  Role,
   SessionListItem,
   SessionListResponse,
+  SystemSettingsResponse,
+  TrustedDeviceListItem,
+  TrustedDeviceListResponse,
   University as UniversityType,
 } from "@university-hub/shared";
 import { LEGAL_DOCUMENT_KIND_LABELS } from "@university-hub/shared";
@@ -77,6 +81,13 @@ import {
   revokeAllOtherSessions,
   revokeMySession,
 } from "@/lib/sessions";
+import {
+  getSystemSettings,
+  listMyTrustedDevices,
+  revokeAllMyTrustedDevices,
+  revokeMyTrustedDevice,
+  updateSystemSettings,
+} from "@/lib/trusted-devices";
 import { getUniversity } from "@/lib/universities";
 import {
   getMailgunStatus,
@@ -195,6 +206,10 @@ export function SettingsPage() {
       <SecuritySection />
 
       <ActiveSessionsSection />
+
+      <TrustedDevicesSection userRole={user?.role ?? null} />
+
+      {user?.role === "super_admin" ? <SystemSettingsSection /> : null}
 
       {canEditUniversity ? <LegalSection /> : null}
 
@@ -1839,4 +1854,311 @@ function handleFormError(
     return;
   }
   setFormError("Something went wrong. Please try again.");
+}
+
+// ---------------------------------------------------------------------------
+// Trusted devices (UNI-47)
+// ---------------------------------------------------------------------------
+
+type TrustedDevicesState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ok"; data: TrustedDeviceListResponse }
+  | { status: "error"; error: string };
+
+function TrustedDevicesSection({ userRole }: { userRole: Role | null }) {
+  const [state, setState] = useState<TrustedDevicesState>({ status: "idle" });
+  const [revoking, setRevoking] = useState(false);
+
+  const reload = () => {
+    const controller = new AbortController();
+    setState({ status: "loading" });
+    listMyTrustedDevices(controller.signal)
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        setState({ status: "ok", data });
+      })
+      .catch((cause: unknown) => {
+        if (controller.signal.aborted) return;
+        setState({
+          status: "error",
+          error:
+            cause instanceof ApiClientError
+              ? cause.message
+              : "Could not load trusted devices.",
+        });
+      });
+    return controller;
+  };
+
+  useEffect(() => {
+    const controller = reload();
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Only `university_admin` can ever earn a trusted-device row today, so
+  // showing this section to other roles would just dangle an empty list
+  // forever. Render nothing for ineligible roles to keep the page tidy.
+  if (userRole !== "university_admin" && userRole !== "super_admin") {
+    return null;
+  }
+
+  const items =
+    state.status === "ok" ? state.data.trusted_devices : ([] as TrustedDeviceListItem[]);
+  const trustWindow = state.status === "ok" ? state.data.trust_window_days : null;
+
+  const handleRevoke = async (id: string) => {
+    setRevoking(true);
+    try {
+      await revokeMyTrustedDevice(id);
+      toast({ title: "Trusted device revoked" });
+      reload();
+    } catch (cause) {
+      toast({
+        title: "Could not revoke trusted device",
+        description:
+          cause instanceof ApiClientError
+            ? cause.message
+            : "Try again in a moment.",
+        variant: "destructive",
+      });
+    } finally {
+      setRevoking(false);
+    }
+  };
+
+  const handleRevokeAll = async () => {
+    if (!confirm("Revoke trust on every remembered device?")) return;
+    setRevoking(true);
+    try {
+      const result = await revokeAllMyTrustedDevices();
+      toast({
+        title: "Trusted devices cleared",
+        description: `${result.revoked_count} device(s) will re-prompt for MFA on next sign-in.`,
+      });
+      reload();
+    } catch (cause) {
+      toast({
+        title: "Could not revoke trusted devices",
+        description:
+          cause instanceof ApiClientError
+            ? cause.message
+            : "Try again in a moment.",
+        variant: "destructive",
+      });
+    } finally {
+      setRevoking(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Laptop className="h-5 w-5 text-muted-foreground" />
+          <CardTitle>Trusted devices</CardTitle>
+        </div>
+        <CardDescription>
+          Devices you've asked the system to remember after signing in. The
+          MFA challenge is skipped on these devices when the cookie is
+          intact and the request comes from the same IP.
+          {trustWindow != null
+            ? ` New trusts last for ${trustWindow} day${trustWindow === 1 ? "" : "s"}.`
+            : null}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {state.status === "loading" || state.status === "idle" ? (
+          <Skeleton className="h-16 w-full" />
+        ) : state.status === "error" ? (
+          <ErrorState
+            title="Couldn't load trusted devices"
+            description={state.error}
+          />
+        ) : items.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No trusted devices on file. The MFA challenge will run on every
+            sign-in.
+          </p>
+        ) : (
+          <>
+            <ul className="space-y-2">
+              {items.map((item) => (
+                <li
+                  key={item.id}
+                  className="flex flex-col gap-2 rounded-md border border-border bg-muted/20 p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div className="space-y-1">
+                    <p className="font-mono text-xs text-muted-foreground">
+                      {item.user_agent_excerpt ?? "Unknown device"}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      IP {item.ip_excerpt ?? "unknown"} · trusted{" "}
+                      {new Date(item.created_at).toLocaleDateString()} · expires{" "}
+                      {new Date(item.expires_at).toLocaleDateString()}
+                      {item.last_used_at
+                        ? ` · last used ${new Date(item.last_used_at).toLocaleDateString()}`
+                        : " · never used"}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={revoking}
+                    onClick={() => void handleRevoke(item.id)}
+                  >
+                    Revoke
+                  </Button>
+                </li>
+              ))}
+            </ul>
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={revoking}
+                onClick={() => void handleRevokeAll()}
+              >
+                Revoke all
+              </Button>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// System settings (super_admin only)
+// ---------------------------------------------------------------------------
+
+type SystemSettingsState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ok"; data: SystemSettingsResponse }
+  | { status: "error"; error: string };
+
+function SystemSettingsSection() {
+  const [state, setState] = useState<SystemSettingsState>({ status: "idle" });
+  const [days, setDays] = useState<string>("30");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setState({ status: "loading" });
+    getSystemSettings(controller.signal)
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        setState({ status: "ok", data });
+        setDays(String(data.mfa_trusted_device_days));
+      })
+      .catch((cause: unknown) => {
+        if (controller.signal.aborted) return;
+        setState({
+          status: "error",
+          error:
+            cause instanceof ApiClientError
+              ? cause.message
+              : "Could not load system settings.",
+        });
+      });
+    return () => controller.abort();
+  }, []);
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    const value = Number.parseInt(days, 10);
+    if (!Number.isFinite(value) || value < 1 || value > 90) {
+      setError("Trust window must be between 1 and 90 days.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const updated = await updateSystemSettings({
+        mfa_trusted_device_days: value,
+      });
+      setState({ status: "ok", data: updated });
+      setDays(String(updated.mfa_trusted_device_days));
+      toast({ title: "System settings saved" });
+    } catch (cause) {
+      setError(
+        cause instanceof ApiClientError
+          ? cause.message
+          : "Could not update system settings.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="h-5 w-5 text-muted-foreground" />
+          <CardTitle>System security</CardTitle>
+        </div>
+        <CardDescription>
+          Single-tenant system settings. Reducing the trust window does not
+          retroactively shrink existing trusted-device rows — only newly-
+          granted ones use the new value. To force everyone to re-MFA, use
+          the per-user "Revoke all" action above or rotate{" "}
+          <code className="font-mono text-xs">SESSION_SECRET</code>.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {state.status === "loading" || state.status === "idle" ? (
+          <Skeleton className="h-16 w-full" />
+        ) : state.status === "error" ? (
+          <ErrorState
+            title="Couldn't load system settings"
+            description={state.error}
+          />
+        ) : (
+          <form className="space-y-3" onSubmit={onSubmit}>
+            <div className="space-y-1">
+              <Label htmlFor="mfa-trusted-device-days">
+                Trusted-device window (days)
+              </Label>
+              <Input
+                id="mfa-trusted-device-days"
+                type="number"
+                min={1}
+                max={90}
+                value={days}
+                onChange={(e) => setDays(e.target.value)}
+                disabled={saving}
+                className="max-w-xs"
+              />
+              <p className="text-xs text-muted-foreground">
+                Between 1 and 90 days. Default 30. Only applies to{" "}
+                <code className="font-mono">university_admin</code>;{" "}
+                <code className="font-mono">super_admin</code> always
+                completes MFA.
+              </p>
+            </div>
+            {error ? (
+              <div
+                role="alert"
+                className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              >
+                {error}
+              </div>
+            ) : null}
+            <div className="flex justify-end">
+              <Button type="submit" disabled={saving}>
+                {saving ? "Saving…" : "Save"}
+              </Button>
+            </div>
+          </form>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
