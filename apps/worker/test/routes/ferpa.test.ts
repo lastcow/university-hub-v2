@@ -117,7 +117,13 @@ interface SeededLog {
   id: string;
   student_user_id: string;
   university_id: string | null;
-  consent_id: string;
+  consent_id: string | null;
+  basis:
+    | "consent"
+    | "school_official_exception"
+    | "directory_info"
+    | "judicial_order"
+    | "other";
   released_to: string;
   data_categories: string;
   notes: string | null;
@@ -461,6 +467,7 @@ function seedFixture(): Fixture {
         student_user_id: String(student_user_id),
         university_id: university_id as string | null,
         consent_id: String(consent_id),
+        basis: "consent",
         released_to: String(released_to),
         data_categories: String(data_categories),
         notes: notes as string | null,

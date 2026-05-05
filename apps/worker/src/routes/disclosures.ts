@@ -11,6 +11,7 @@
 import {
   DISCLOSURE_DATA_CATEGORIES,
   recordDisclosureInputSchema,
+  type DisclosureBasis,
   type DisclosureDataCategory,
   type DisclosureLogEntry,
   type DisclosureLogListItem,
@@ -26,7 +27,8 @@ type LogRow = Row & {
   id: string;
   student_user_id: string;
   university_id: string | null;
-  consent_id: string;
+  consent_id: string | null;
+  basis: DisclosureBasis;
   released_to: string;
   data_categories: string;
   notes: string | null;
@@ -52,7 +54,7 @@ type ConsentRow = Row & {
 type CountRow = Row & { c: number };
 
 const SELECT_BASE = `
-  SELECT dl.id, dl.student_user_id, dl.university_id, dl.consent_id,
+  SELECT dl.id, dl.student_user_id, dl.university_id, dl.consent_id, dl.basis,
          dl.released_to, dl.data_categories, dl.notes,
          dl.released_at, dl.released_by_user_id,
          u.name AS student_name, u.email AS student_email,
@@ -109,6 +111,7 @@ function toListItem(row: LogRow): DisclosureLogListItem {
     student_user_id: row.student_user_id,
     university_id: row.university_id,
     consent_id: row.consent_id,
+    basis: row.basis,
     released_to: row.released_to,
     data_categories: parseCategories(row.data_categories),
     notes: row.notes,
@@ -128,6 +131,7 @@ function toApi(row: LogRow): DisclosureLogEntry {
     student_user_id: row.student_user_id,
     university_id: row.university_id,
     consent_id: row.consent_id,
+    basis: row.basis,
     released_to: row.released_to,
     data_categories: parseCategories(row.data_categories),
     notes: row.notes,
