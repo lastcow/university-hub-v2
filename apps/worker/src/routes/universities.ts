@@ -1,7 +1,12 @@
-// Universities CRUD endpoints (epic UNI-1 §9, §17, §28).
+// Universities CRUD endpoints (epic UNI-1 §9, §17, §28; UNI-58 §B).
 //
 //   GET   /api/universities          list (super_admin: all; others: own)
-//   POST  /api/universities          create (super_admin only)
+//   POST  /api/universities          locked: returns 409 single_tenant_deploy.
+//                                    New university deploys are provisioned
+//                                    via scripts/provision-university.mjs;
+//                                    the platform is single-tenant per
+//                                    Worker, so creating a second row is
+//                                    always an orphan-write footgun.
 //   GET   /api/universities/:id      detail (scoped)
 //   PATCH /api/universities/:id      update (super_admin or that university's admin)
 //
@@ -9,7 +14,6 @@
 // uniqueness is enforced by the DB (UNIQUE constraint) and surfaced as a 409.
 
 import {
-  createUniversityInputSchema,
   updateUniversityInputSchema,
   type University,
   type UniversityStatus,
@@ -20,6 +24,11 @@ import type { UserRow } from "../auth/session.js";
 import { requireAuth, type RequestContext } from "../middleware/auth.js";
 import { writeAuditLog } from "../services/audit.js";
 import { errorResponse, jsonOk } from "../utils/responses.js";
+
+// Single-tenant deploy hint surfaced via POST /api/universities. Kept as
+// a constant so tests + the SPA can pin against the same string.
+export const SINGLE_TENANT_PROVISION_HINT =
+  "Use scripts/provision-university.mjs to create new university deploys.";
 
 type UniversityRow = Row & {
   id: string;
@@ -97,69 +106,25 @@ export async function handleListUniversities(ctx: RequestContext): Promise<Respo
 
 // ---------------------------------------------------------------------------
 // POST /api/universities
+//
+// Permanently locked. Creating a university row at runtime always
+// produces an orphan deploy (no Worker, no Pages project, no D1
+// database) so we close the door on the UI flow and route every
+// caller — including super_admin — to the per-customer provision
+// script. The endpoint stays mounted so a stale client gets a clean
+// 409 with a hint instead of a generic 404.
 // ---------------------------------------------------------------------------
 
 export async function handleCreateUniversity(ctx: RequestContext): Promise<Response> {
   const auth = requireAuth(ctx);
   if (auth instanceof Response) return auth;
-  const actor = auth.user;
 
-  if (actor.role !== "super_admin") {
-    return errorResponse(
-      403,
-      "forbidden",
-      "Only super admins can create universities.",
-    );
-  }
-
-  const raw = await readJson(ctx.request);
-  const parsed = createUniversityInputSchema.safeParse(raw);
-  if (!parsed.success) {
-    return errorResponse(400, "invalid_request", "Invalid university payload.", {
-      issues: parsed.error.flatten().fieldErrors,
-    });
-  }
-
-  const { name, slug = null, status = "active" } = parsed.data;
-
-  if (slug) {
-    const existing = await queryFirst<{ id: string }>(
-      ctx.env.DB,
-      `SELECT id FROM universities WHERE slug = ? LIMIT 1`,
-      [slug],
-    );
-    if (existing) {
-      return errorResponse(409, "slug_taken", "That slug is already in use.");
-    }
-  }
-
-  const id = crypto.randomUUID();
-  const now = new Date().toISOString();
-  await execute(
-    ctx.env.DB,
-    `INSERT INTO universities (id, name, slug, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, name, slug, status, now, now],
+  return errorResponse(
+    409,
+    "single_tenant_deploy",
+    "Creating universities from the API is disabled in this single-tenant deploy.",
+    { hint: SINGLE_TENANT_PROVISION_HINT },
   );
-
-  await writeAuditLog(ctx.env.DB, {
-    action: "university.created",
-    actorUserId: actor.id,
-    universityId: id,
-    entityType: "university",
-    entityId: id,
-    metadata: { name, slug, status },
-  });
-
-  const row = await queryFirst<UniversityRow>(
-    ctx.env.DB,
-    `${SELECT_UNIVERSITY} WHERE id = ? LIMIT 1`,
-    [id],
-  );
-  if (!row) {
-    return errorResponse(500, "create_failed", "Could not create university.");
-  }
-  return jsonOk(toUniversity(row), { status: 201 });
 }
 
 // ---------------------------------------------------------------------------

@@ -300,6 +300,12 @@ export const SCENARIOS: Scenario[] = [
     successActors: allActorKeys(),
   },
   {
+    // UNI-58 §B: POST /api/universities is permanently disabled in this
+    // single-tenant deploy. Every actor — including super_admin —
+    // receives 409 single_tenant_deploy with a hint pointing at
+    // scripts/provision-university.mjs. The cross-actor matrix asserts
+    // 4xx for every role (so a future regression that re-opens the
+    // endpoint would fail loudly).
     id: "POST /api/universities",
     invoke: (actor, db) =>
       handleCreateUniversity(
@@ -309,8 +315,7 @@ export const SCENARIOS: Scenario[] = [
           body: { name: "Brand New U", slug: `brand-new-${actor.id.slice(0, 6)}` },
         }),
       ),
-    successActors: ["superAdmin"],
-    strictForbidden: true,
+    successActors: [],
   },
   {
     id: "GET /api/universities/:id (UNI_A)",

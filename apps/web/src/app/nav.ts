@@ -11,7 +11,6 @@
 import type { LucideIcon } from "lucide-react";
 import {
   BookOpen,
-  Building2,
   ClipboardList,
   GraduationCap,
   LayoutDashboard,
@@ -120,12 +119,10 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   {
     label: "Administration",
     items: [
-      {
-        label: "Universities",
-        to: "/app/universities",
-        icon: Building2,
-        roles: ["super_admin"],
-      },
+      // The Universities CRUD UI was retired in UNI-58. The deploy's
+      // single university record is now edited via Settings → University,
+      // and new university deployments are provisioned with
+      // `scripts/provision-university.mjs` rather than from the UI.
       {
         label: "Users",
         to: "/app/users",

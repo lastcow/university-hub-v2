@@ -1,8 +1,13 @@
-// Frontend client for the universities API. Same shapes used by the
-// /app/universities pages.
+// Frontend client for the universities API.
+//
+// `POST /api/universities` is intentionally not exposed: as of UNI-58 the
+// server returns 409 single_tenant_deploy for any caller, and the SPA
+// edits the deploy's single university record via Settings → University
+// (which routes through `lib/settings.ts → updateUniversitySettings`).
+// New university deploys are provisioned with
+// scripts/provision-university.mjs.
 
 import type {
-  CreateUniversityInput,
   University,
   UpdateUniversityInput,
 } from "@university-hub/shared";
@@ -15,10 +20,6 @@ export function listUniversities(signal?: AbortSignal): Promise<University[]> {
 
 export function getUniversity(id: string, signal?: AbortSignal): Promise<University> {
   return api.get<University>(`/api/universities/${id}`, { signal });
-}
-
-export function createUniversity(input: CreateUniversityInput): Promise<University> {
-  return api.post<University>("/api/universities", input);
 }
 
 export function updateUniversity(
