@@ -178,27 +178,42 @@ describe("GET /api/universities — scoping", () => {
   });
 });
 
-describe("POST /api/universities — only super_admin", () => {
-  it("rejects university_admin", async () => {
+describe("POST /api/universities — single-tenant lock (UNI-58 §B)", () => {
+  it("returns 409 single_tenant_deploy for super_admin (no DB write, no audit)", async () => {
     const db = makeDb();
     const res = await handleCreateUniversity(
-      ctx(ACTORS.uniAAdmin, db, { method: "POST", body: { name: "New U", slug: "new-u" } }),
+      ctx(ACTORS.superAdmin, db, {
+        method: "POST",
+        body: { name: "Brand New", slug: "brand-new" },
+      }),
     );
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(409);
+    const body = await jsonBody<{
+      ok: false;
+      error: { code: string; message: string; details?: { hint?: string } };
+    }>(res);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("single_tenant_deploy");
+    expect(body.error.details?.hint).toMatch(/scripts\/provision-university\.mjs/);
     expect(db.inserts("universities").length).toBe(0);
     expect(db.inserts("audit_logs").length).toBe(0);
   });
 
-  it("super_admin can create + writes a university.created audit row", async () => {
+  it("returns 409 single_tenant_deploy for university_admin too", async () => {
     const db = makeDb();
     const res = await handleCreateUniversity(
-      ctx(ACTORS.superAdmin, db, { method: "POST", body: { name: "Brand New", slug: "brand-new" } }),
+      ctx(ACTORS.uniAAdmin, db, {
+        method: "POST",
+        body: { name: "New U", slug: "new-u" },
+      }),
     );
-    expect(res.status).toBe(201);
-    expect(db.inserts("universities").length).toBe(1);
-    const audits = db.inserts("audit_logs");
-    expect(audits.length).toBe(1);
-    expect(audits[0]!.params[3]).toBe("university.created");
+    expect(res.status).toBe(409);
+    const body = await jsonBody<{
+      ok: false;
+      error: { code: string };
+    }>(res);
+    expect(body.error.code).toBe("single_tenant_deploy");
+    expect(db.inserts("universities").length).toBe(0);
   });
 });
 

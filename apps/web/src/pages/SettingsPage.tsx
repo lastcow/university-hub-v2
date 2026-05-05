@@ -1,14 +1,12 @@
-// /app/settings — university, account, security/MFA, Mailgun status
-// (UNI-15 + UNI-24).
+// Settings section components (UNI-15, UNI-24, UNI-58).
 //
-// Account section is always shown to the signed-in user.
-// University section is gated to super_admin / university_admin.
-// Security section shows MFA enrollment state, recovery-code count, and
-// (for non-mandatory roles) a disable button. The regenerate flow rotates
-// recovery codes — old codes are immediately invalidated.
-// Mailgun section displays per-var Configured / Missing configuration; the
-// underlying API never returns secret values, so this page never has access
-// to one and never echoes one.
+// Each section is exported so the routed Settings layout
+// (`pages/settings/SettingsLayout.tsx` + `pages/settings/routes.tsx`)
+// can mount them at their own URL (e.g. /app/settings/account). Sections
+// fetch their own data so they remain self-contained and can be lazy-
+// loaded by route. Role gating that hides whole sections lives in the
+// route table; sections themselves render a friendly message when the
+// caller's role lacks the underlying data.
 
 import { useEffect, useState, type FormEvent } from "react";
 import {
@@ -51,9 +49,13 @@ import type {
   TrustedDeviceListItem,
   TrustedDeviceListResponse,
   University as UniversityType,
+  UniversityStatus,
   UpdateLmsProviderConfigInput,
 } from "@university-hub/shared";
-import { LEGAL_DOCUMENT_KIND_LABELS } from "@university-hub/shared";
+import {
+  LEGAL_DOCUMENT_KIND_LABELS,
+  UNIVERSITY_STATUSES,
+} from "@university-hub/shared";
 
 import { useAuth } from "@/auth/AuthContext";
 import { Badge } from "@/components/ui/badge";
@@ -127,64 +129,52 @@ const VAR_LABELS: Record<MailgunVarStatusEntry["key"], string> = {
   MAILGUN_REGION: "Region",
 };
 
-export function SettingsPage() {
-  const { user, refresh } = useAuth();
+// ---------------------------------------------------------------------------
+// University settings — admin-only edit surface for the deploy's single
+// university record. Absorbs the old standalone /app/universities edit
+// pages (UNI-58 §B): non-admin roles never see this section, and the
+// status dropdown that lived on /app/universities/:id/edit moves here for
+// super_admin (so we don't lose the active/suspended/archived control).
+// ---------------------------------------------------------------------------
 
-  const canEditUniversity =
+interface UniversitySectionProps {
+  /** Defaults to the signed-in user's `university_id`. */
+  universityId?: string;
+}
+
+export function UniversitySection({ universityId }: UniversitySectionProps = {}) {
+  const { user } = useAuth();
+  const targetId = universityId ?? user?.university_id ?? null;
+  const canEdit =
     user?.role === "super_admin" || user?.role === "university_admin";
-  const canSeeMailgun = user?.role === "super_admin";
+  const canEditStatus = user?.role === "super_admin";
 
-  const [mailgun, setMailgun] = useState<MailgunState>({ status: "idle" });
-  const [uni, setUni] = useState<UniState>({ status: "idle" });
+  const [state, setState] = useState<UniState>({ status: "idle" });
+  const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [status, setStatus] = useState<UniversityStatus>("active");
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  // -------------------------------------------------------------------------
-  // Mailgun status — super_admin only. The endpoint returns 403 for everyone
-  // else; mirroring that gate on the client keeps the section out of the UI
-  // entirely instead of flashing a permission error toast.
-  // -------------------------------------------------------------------------
   useEffect(() => {
-    if (!canSeeMailgun) {
-      setMailgun({ status: "idle" });
+    if (!targetId) {
+      setState({ status: "idle" });
       return;
     }
     const controller = new AbortController();
-    setMailgun({ status: "loading" });
-    getMailgunStatus(controller.signal)
+    setState({ status: "loading" });
+    getUniversity(targetId, controller.signal)
       .then((data) => {
         if (controller.signal.aborted) return;
-        setMailgun({ status: "ok", data });
+        setState({ status: "ok", data });
+        setName(data.name);
+        setSlug(data.slug ?? "");
+        setStatus(data.status);
       })
       .catch((cause: unknown) => {
         if (controller.signal.aborted) return;
-        setMailgun({
-          status: "error",
-          error:
-            cause instanceof ApiClientError
-              ? cause.message
-              : "Could not load Mailgun status.",
-        });
-      });
-    return () => controller.abort();
-  }, [canSeeMailgun]);
-
-  // -------------------------------------------------------------------------
-  // University (only when the user belongs to one)
-  // -------------------------------------------------------------------------
-  useEffect(() => {
-    if (!user?.university_id || !canEditUniversity) {
-      setUni({ status: "idle" });
-      return;
-    }
-    const controller = new AbortController();
-    setUni({ status: "loading" });
-    getUniversity(user.university_id, controller.signal)
-      .then((data) => {
-        if (controller.signal.aborted) return;
-        setUni({ status: "ok", data });
-      })
-      .catch((cause: unknown) => {
-        if (controller.signal.aborted) return;
-        setUni({
+        setState({
           status: "error",
           error:
             cause instanceof ApiClientError
@@ -193,78 +183,27 @@ export function SettingsPage() {
         });
       });
     return () => controller.abort();
-  }, [user?.university_id, canEditUniversity]);
+  }, [targetId]);
 
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-        <p className="text-sm text-muted-foreground">
-          Manage your account, university details, and email delivery
-          configuration.
-        </p>
-      </div>
-
-      {canEditUniversity && user?.university_id ? (
-        <UniversitySection
-          state={uni}
-          onSaved={(saved) => setUni({ status: "ok", data: saved })}
-        />
-      ) : null}
-
-      <AccountSection
-        currentName={user?.name ?? ""}
-        onSaved={() => {
-          void refresh();
-        }}
-        userRole={user?.role ?? null}
-      />
-
-      <SecuritySection />
-
-      <ActiveSessionsSection />
-
-      <TrustedDevicesSection userRole={user?.role ?? null} />
-
-      {user?.role === "super_admin" ? <SystemSettingsSection /> : null}
-
-      {canEditUniversity ? <LegalSection /> : null}
-
-      {canEditUniversity ? <IntegrationsSection /> : null}
-
-      {user?.role === "super_admin" ? <EscalationContactsSection /> : null}
-
-      {canSeeMailgun ? <MailgunSection state={mailgun} /> : null}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// University settings
-// ---------------------------------------------------------------------------
-
-function UniversitySection({
-  state,
-  onSaved,
-}: {
-  state: UniState;
-  onSaved: (uni: UniversityType) => void;
-}) {
-  const [name, setName] = useState("");
-  const [slug, setSlug] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-
-  useEffect(() => {
-    if (state.status === "ok" && state.data) {
-      setName(state.data.name);
-      setSlug(state.data.slug ?? "");
-    }
-  }, [state.status, state.data]);
+  if (!canEdit) {
+    return (
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <University className="h-5 w-5 text-muted-foreground" />
+            <CardTitle>University</CardTitle>
+          </div>
+          <CardDescription>
+            Only administrators can edit university details.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (state.status !== "ok" || !state.data) return;
     setFormError(null);
     setFieldErrors({});
     setSubmitting(true);
@@ -272,13 +211,14 @@ function UniversitySection({
       const updated = await updateUniversitySettings({
         name,
         slug: slug.trim() || null,
+        ...(canEditStatus && status !== state.data.status ? { status } : {}),
       });
       toast({
         title: "University settings saved",
         description: `${updated.name} has been updated.`,
         variant: "success",
       });
-      onSaved(updated);
+      setState({ status: "ok", data: updated });
     } catch (cause) {
       handleFormError(cause, setFormError, setFieldErrors);
     } finally {
@@ -294,7 +234,13 @@ function UniversitySection({
           <CardTitle>University</CardTitle>
         </div>
         <CardDescription>
-          Visible to admins only. Saving writes a `settings.updated` audit row.
+          Edit the deploy's university record. Saving writes a
+          `settings.updated` audit row. New university deployments are
+          provisioned via{" "}
+          <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">
+            scripts/provision-university.mjs
+          </code>{" "}
+          — they aren't created from the UI.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -350,6 +296,29 @@ function UniversitySection({
               ) : null}
             </div>
 
+            {canEditStatus ? (
+              <div className="space-y-2">
+                <Label htmlFor="settings-uni-status">Status</Label>
+                <select
+                  id="settings-uni-status"
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value as UniversityStatus)}
+                  disabled={submitting}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {UNIVERSITY_STATUSES.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Suspending or archiving the university disables sign-in for
+                  every member. Super-admins only.
+                </p>
+              </div>
+            ) : null}
+
             {formError ? (
               <div
                 role="alert"
@@ -375,7 +344,42 @@ function UniversitySection({
 // Account settings
 // ---------------------------------------------------------------------------
 
-function AccountSection({
+interface AccountSectionProps {
+  currentName?: string;
+  /** Called after a successful save (to refresh `useAuth().user`). */
+  onSaved?: () => void;
+  userRole?: string | null;
+}
+
+export function AccountSection(props: AccountSectionProps = {}) {
+  return <AccountSectionInner {...props} />;
+}
+
+function AccountSectionInner({
+  currentName,
+  onSaved,
+  userRole,
+}: AccountSectionProps) {
+  const { user, refresh } = useAuth();
+  const resolvedCurrentName = currentName ?? user?.name ?? "";
+  const resolvedUserRole = userRole ?? user?.role ?? null;
+  const handleSaved = () => {
+    if (onSaved) {
+      onSaved();
+    } else {
+      void refresh();
+    }
+  };
+  return (
+    <AccountSectionForm
+      currentName={resolvedCurrentName}
+      onSaved={handleSaved}
+      userRole={resolvedUserRole}
+    />
+  );
+}
+
+function AccountSectionForm({
   currentName,
   onSaved,
   userRole,
@@ -629,7 +633,7 @@ interface MfaState {
   error?: string;
 }
 
-function SecuritySection() {
+export function SecuritySection() {
   const [mfa, setMfa] = useState<MfaState>({ status: "idle" });
   const [newCodes, setNewCodes] = useState<string[] | null>(null);
 
@@ -936,7 +940,7 @@ interface SessionsState {
   error?: string;
 }
 
-function ActiveSessionsSection() {
+export function ActiveSessionsSection() {
   const [state, setState] = useState<SessionsState>({ status: "idle" });
   const [busyId, setBusyId] = useState<string | null>(null);
   const [signingOutAll, setSigningOutAll] = useState(false);
@@ -1168,7 +1172,7 @@ interface LegalState {
 
 const LEGAL_KINDS: LegalDocumentKind[] = ["terms", "privacy"];
 
-function LegalSection() {
+export function LegalSection() {
   const [state, setState] = useState<LegalState>({ status: "idle" });
 
   const load = () => {
@@ -1421,7 +1425,7 @@ interface EscalationContactsState {
   error?: string;
 }
 
-function EscalationContactsSection() {
+export function EscalationContactsSection() {
   const [state, setState] = useState<EscalationContactsState>({
     status: "idle",
   });
@@ -1757,7 +1761,30 @@ function EscalationContactEditor({
 // Mailgun status
 // ---------------------------------------------------------------------------
 
-function MailgunSection({ state }: { state: MailgunState }) {
+export function MailgunSection() {
+  const [state, setState] = useState<MailgunState>({ status: "idle" });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setState({ status: "loading" });
+    getMailgunStatus(controller.signal)
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        setState({ status: "ok", data });
+      })
+      .catch((cause: unknown) => {
+        if (controller.signal.aborted) return;
+        setState({
+          status: "error",
+          error:
+            cause instanceof ApiClientError
+              ? cause.message
+              : "Could not load Mailgun status.",
+        });
+      });
+    return () => controller.abort();
+  }, []);
+
   return (
     <Card>
       <CardHeader>
@@ -1885,7 +1912,16 @@ type TrustedDevicesState =
   | { status: "ok"; data: TrustedDeviceListResponse }
   | { status: "error"; error: string };
 
-function TrustedDevicesSection({ userRole }: { userRole: Role | null }) {
+interface TrustedDevicesSectionProps {
+  userRole?: Role | null;
+}
+
+export function TrustedDevicesSection(props: TrustedDevicesSectionProps = {}) {
+  const { user } = useAuth();
+  return <TrustedDevicesSectionInner userRole={props.userRole ?? user?.role ?? null} />;
+}
+
+function TrustedDevicesSectionInner({ userRole }: { userRole: Role | null }) {
   const [state, setState] = useState<TrustedDevicesState>({ status: "idle" });
   const [revoking, setRevoking] = useState(false);
 
@@ -2082,7 +2118,7 @@ type SystemSettingsState =
   | { status: "ok"; data: SystemSettingsResponse }
   | { status: "error"; error: string };
 
-function SystemSettingsSection() {
+export function SystemSettingsSection() {
   const [state, setState] = useState<SystemSettingsState>({ status: "idle" });
   const [days, setDays] = useState<string>("30");
   const [revalDays, setRevalDays] = useState<string>("30");
@@ -2248,7 +2284,55 @@ interface LmsState {
   error?: string;
 }
 
-function IntegrationsSection() {
+export function IntegrationsSection() {
+  const { user } = useAuth();
+  const isAdmin =
+    user?.role === "super_admin" || user?.role === "university_admin";
+
+  return (
+    <div className="space-y-6">
+      <UserIntegrationsPanel />
+      {isAdmin ? <AdminLmsProvidersPanel /> : null}
+    </div>
+  );
+}
+
+/**
+ * User-facing pointer to the LMS connect page (UNI-54). Always shown so
+ * faculty / teachers / TAs / students can find the connect surface from
+ * Settings, with no failing API calls for non-admins.
+ */
+function UserIntegrationsPanel() {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Link2 className="h-5 w-5 text-muted-foreground" />
+          <CardTitle>Connect a Learning Management System</CardTitle>
+        </div>
+        <CardDescription>
+          Link your Canvas account so the platform can pull your courses,
+          rosters, and grades. Each user manages their own connection from
+          the dedicated Integrations page.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Button asChild>
+          <Link to="/app/integrations">
+            <Link2 className="h-4 w-4" />
+            Open Integrations
+          </Link>
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Admin OAuth client configuration (UNI-53). Only mounted for super_admin
+ * / university_admin; non-admins never trigger the underlying request.
+ */
+function AdminLmsProvidersPanel() {
   const [state, setState] = useState<LmsState>({ status: "idle" });
   const [busyProvider, setBusyProvider] = useState<string | null>(null);
 
@@ -2294,14 +2378,13 @@ function IntegrationsSection() {
     <Card>
       <CardHeader>
         <div className="flex items-center gap-2">
-          <Link2 className="h-5 w-5 text-muted-foreground" />
-          <CardTitle>Integrations</CardTitle>
+          <ShieldCheck className="h-5 w-5 text-muted-foreground" />
+          <CardTitle>Integration setup (admin only)</CardTitle>
         </div>
         <CardDescription>
           Configure Learning Management System (LMS) OAuth clients for your
-          university. Once a provider is configured and enabled, faculty and
-          teachers can connect their account from{" "}
-          <code className="font-mono text-xs">/app/integrations</code>.
+          university. Once a provider is configured and enabled, every user
+          can connect their account from the Integrations page above.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -2313,6 +2396,11 @@ function IntegrationsSection() {
           <ErrorState
             title="Couldn't load LMS integrations"
             description={state.error}
+            action={
+              <Button size="sm" variant="outline" onClick={() => void reload()}>
+                Try again
+              </Button>
+            }
           />
         ) : !state.data || state.data.providers.length === 0 ? (
           <p className="text-sm text-muted-foreground">

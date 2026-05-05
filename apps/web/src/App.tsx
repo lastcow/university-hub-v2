@@ -1,4 +1,4 @@
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
 import { AppShell } from "@/app/AppShell";
 import { AuthProvider } from "@/auth/AuthContext";
@@ -31,7 +31,16 @@ import { IntegrationsPage } from "@/pages/IntegrationsPage";
 import { InvitationsPage } from "@/pages/InvitationsPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { OnboardingLmsPage } from "@/pages/OnboardingLmsPage";
-import { SettingsPage } from "@/pages/SettingsPage";
+import { SettingsLayout } from "@/pages/settings/SettingsLayout";
+import {
+  AccountSettingsRoute,
+  IntegrationsSettingsRoute,
+  LegalSettingsRoute,
+  MailgunSettingsRoute,
+  SecuritySettingsRoute,
+  SystemSettingsRoute,
+  UniversitySettingsRoute,
+} from "@/pages/settings/routes";
 import { SignInPage } from "@/pages/SignInPage";
 import { StudentDashboardPage } from "@/pages/StudentDashboardPage";
 import { StudentDetailPage } from "@/pages/StudentDetailPage";
@@ -48,10 +57,6 @@ import { TeacherDashboardPage } from "@/pages/TeacherDashboardPage";
 import { TeacherDetailPage } from "@/pages/TeacherDetailPage";
 import { TeacherStudentsPage } from "@/pages/TeacherStudentsPage";
 import { TeachersPage } from "@/pages/TeachersPage";
-import { UniversitiesPage } from "@/pages/UniversitiesPage";
-import { UniversityDetailPage } from "@/pages/UniversityDetailPage";
-import { UniversityEditPage } from "@/pages/UniversityEditPage";
-import { UniversityNewPage } from "@/pages/UniversityNewPage";
 import { UserDetailPage } from "@/pages/UserDetailPage";
 import { UsersPage } from "@/pages/UsersPage";
 import { UxStatesPage } from "@/pages/UxStatesPage";
@@ -82,10 +87,6 @@ export default function App() {
             <Route index element={<DefaultDashboardRedirect />} />
             <Route path="dashboard" element={<DashboardPage />} />
             <Route path="invitations" element={<InvitationsPage />} />
-            <Route path="universities" element={<UniversitiesPage />} />
-            <Route path="universities/new" element={<UniversityNewPage />} />
-            <Route path="universities/:id" element={<UniversityDetailPage />} />
-            <Route path="universities/:id/edit" element={<UniversityEditPage />} />
             <Route path="users" element={<UsersPage />} />
             <Route path="users/:id" element={<UserDetailPage />} />
             <Route path="departments" element={<DepartmentsPage />} />
@@ -152,7 +153,19 @@ export default function App() {
             <Route path="email-logs" element={<EmailLogsPage />} />
             <Route path="integrations" element={<IntegrationsPage />} />
             <Route path="onboarding/lms" element={<OnboardingLmsPage />} />
-            <Route path="settings" element={<SettingsPage />} />
+            <Route path="settings" element={<SettingsLayout />}>
+              <Route index element={<Navigate to="account" replace />} />
+              <Route path="account" element={<AccountSettingsRoute />} />
+              <Route path="security" element={<SecuritySettingsRoute />} />
+              <Route path="university" element={<UniversitySettingsRoute />} />
+              <Route
+                path="integrations"
+                element={<IntegrationsSettingsRoute />}
+              />
+              <Route path="legal" element={<LegalSettingsRoute />} />
+              <Route path="mailgun" element={<MailgunSettingsRoute />} />
+              <Route path="system" element={<SystemSettingsRoute />} />
+            </Route>
             <Route path="ux" element={<UxStatesPage />} />
             <Route path="access-denied" element={<AccessDeniedPage />} />
             <Route path="*" element={<NotFoundPage />} />

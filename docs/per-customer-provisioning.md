@@ -277,6 +277,26 @@ wrangler secret delete BOOTSTRAP_SECRET \
   --config=provisioning/<slug>/wrangler.toml
 ```
 
+## Editing the university record after provisioning
+
+The single university row created during bootstrap is edited from
+**Settings → University** in the SPA (admin-only; super_admin can also
+flip the active/suspended/archived status). The standalone
+`/app/universities` CRUD UI was retired in UNI-58 — keeping a "create
+university" button on a single-tenant deploy was a footgun, so:
+
+- `/app/universities`, `/app/universities/new`, `/app/universities/:id`,
+  and `/app/universities/:id/edit` all 404.
+- `POST /api/universities` returns `409 single_tenant_deploy` with a
+  hint pointing back at this script. There is no supported way to
+  create a second university row inside an existing deploy.
+- `GET` and `PATCH /api/universities/:id` are unchanged — the Settings
+  → University form uses them.
+
+To onboard a second customer, run this provision script with a new
+`--slug`. Each customer gets their own Worker + D1 + Pages project; one
+deploy = one university.
+
 ## Out of scope (for this script)
 
 - Billing / metering integration. Each customer is invoiced manually until
