@@ -9,7 +9,6 @@ import type {
   InvitationListItem,
   InvitationLookupResult,
   InvitationStatus,
-  SessionUser,
 } from "@university-hub/shared";
 
 import { api } from "./api";
@@ -59,12 +58,8 @@ export function lookupInvitation(
   });
 }
 
-export interface InvitationAcceptResponse extends InvitationAcceptResult {
-  user: SessionUser | null;
-}
-
 export function acceptInvitation(
   input: AcceptInvitationInput,
-): Promise<InvitationAcceptResponse> {
-  return api.post<InvitationAcceptResponse>("/api/invitations/accept", input);
+): Promise<InvitationAcceptResult> {
+  return api.post<InvitationAcceptResult>("/api/invitations/accept", input);
 }

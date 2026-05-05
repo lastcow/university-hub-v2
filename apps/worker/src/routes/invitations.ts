@@ -27,12 +27,16 @@ import {
   INVITATION_TTL_MS,
 } from "@university-hub/shared";
 
+import {
+  roleAlwaysChallenges,
+  roleRequiresMfa,
+} from "../auth/mfa-policy.js";
 import { hashPassword } from "../auth/password.js";
 import {
   generateInvitationToken,
   hashInvitationToken,
 } from "../auth/invitation-token.js";
-import { createSession, toSessionUser, type UserRow } from "../auth/session.js";
+import { type UserRow } from "../auth/session.js";
 import { execute, queryAll, queryFirst, type Row } from "../db/index.js";
 import {
   sendInvitationEmail,
@@ -46,8 +50,8 @@ import {
   rateLimitedResponse,
   bySession,
 } from "../middleware/rate-limit.js";
+import { issueMfaChallenge, loadMfaUser } from "./mfa.js";
 import { writeAuditLog } from "../services/audit.js";
-import { buildSessionSetCookie } from "../utils/cookies.js";
 import { errorResponse, jsonOk } from "../utils/responses.js";
 
 // ---------------------------------------------------------------------------
@@ -760,50 +764,60 @@ export async function handleAcceptInvitation(ctx: RequestContext): Promise<Respo
     emailType: "welcome",
   });
 
-  // Auto sign-in: create a session and set the cookie so the user lands on
-  // the dashboard already authenticated.
-  const userRow = await queryFirst<UserRow>(
-    ctx.env.DB,
-    `SELECT id, email, password_hash, name, role, status, university_id,
-            last_sign_in_at, created_at, updated_at
-       FROM users WHERE id = ? LIMIT 1`,
-    [userId],
-  );
+  // UNI-60: hand the new account off to the MFA enrollment flow rather
+  // than minting a session cookie here.
+  //
+  // Until UNI-49 the invitation-accept endpoint auto-signed users in,
+  // which let them reach `/app/*` without ever enrolling in MFA. UNI-49
+  // then made MFA mandatory for every role — so when those auto-signed-in
+  // users came back for a second sign-in (after sign-out or session
+  // timeout) the worker correctly issued an `mfa_required` challenge,
+  // but the user's `mfa_secret` was still NULL, leaving them stuck in a
+  // sign-in ↔ "Sign in again to complete MFA verification" loop.
+  //
+  // Mirroring `handleSignIn`'s `mfa_required` branch closes the gap:
+  // accept the invitation, set the MFA challenge cookie, and let the SPA
+  // pivot to the existing TOTP-enroll step. A real session is only minted
+  // after `handleMfaVerifyEnroll` accepts the user's first TOTP code.
+  // `roleRequiresMfa` is hard-coded to `true` today (UNI-49); the guard
+  // is preserved here so a future per-role exemption stays consistent
+  // with `routes/auth.ts` without needing a duplicate decision tree.
+  const userRow = await loadMfaUser(ctx.env.DB, userId);
+  if (!userRow) {
+    return errorResponse(
+      500,
+      "create_failed",
+      "Could not load the new account.",
+    );
+  }
+  if (!roleRequiresMfa(row.role)) {
+    return errorResponse(
+      500,
+      "mfa_policy_unsupported",
+      "This invitation cannot be completed: MFA enrollment is required for every role.",
+    );
+  }
 
-  const ipAddress =
-    ctx.request.headers.get("cf-connecting-ip") ??
-    ctx.request.headers.get("x-forwarded-for") ??
-    null;
-  const userAgent = ctx.request.headers.get("user-agent");
-  const created = await createSession(ctx.env, {
-    userId,
-    ipAddress,
-    userAgent,
-  });
-  await execute(
-    ctx.env.DB,
-    `UPDATE users SET last_sign_in_at = ?, updated_at = ? WHERE id = ?`,
-    [now, now, userId],
-  );
-
-  const cookieName = ctx.env.SESSION_COOKIE_NAME || "university_hub_session";
-  const setCookie = buildSessionSetCookie(ctx.env, {
-    name: cookieName,
-    value: created.token,
-    expires: created.expiresAt,
-  });
+  const challenge = await issueMfaChallenge(ctx, userRow);
 
   const body: InvitationAcceptResult = {
     user_id: userId,
     email: row.email,
     role: row.role,
+    mfa_enrollment_required: true,
+    // Mirrors `SignInResponse.trusted_device_eligible` so the SPA can
+    // decide later (on the post-enrollment challenge surface, if it ever
+    // hits one) whether to render the "Trust this device" checkbox.
+    // super_admin → false (always-MFA, no opt-in trust).
+    // university_admin → true (UNI-47 cookie bypass).
+    // Everything else → true (UNI-49 risk-based fingerprint bypass).
+    trusted_device_eligible: !roleAlwaysChallenges(row.role)
+      ? true
+      : row.role === "university_admin",
   };
-  // `user` shape is the same as /api/auth/me so the frontend can hydrate
-  // its AuthContext from the response if it wants.
-  const headers: HeadersInit = userRow ? { "set-cookie": setCookie } : {};
-  return jsonOk({ ...body, user: userRow ? toSessionUser(userRow) : null }, {
+  return jsonOk(body, {
     status: 201,
-    headers,
+    headers: { "set-cookie": challenge.setCookie },
   });
 }
 

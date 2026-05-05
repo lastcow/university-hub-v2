@@ -3,9 +3,15 @@
 // Three phases:
 //   1. lookup    — call GET /api/invitations/lookup, branch on result
 //   2. valid     — render the account-setup form
-//   3. submitted — POST /api/invitations/accept, on success the backend sets
-//                  a session cookie so we hydrate AuthContext and redirect to
-//                  /app/dashboard. Anything non-2xx maps to a friendly error.
+//   3. submitted — POST /api/invitations/accept. UNI-60: the backend now
+//                  hands the user off to the MFA enrollment flow rather
+//                  than minting a session cookie here, so on success we
+//                  navigate to /sign-in with `mfaEnrollPending` state. The
+//                  sign-in page picks that up and renders the MFA-enroll
+//                  step directly (no second password prompt) — verify-
+//                  enroll then mints the real session and lands the user
+//                  on /app/dashboard. Anything non-2xx maps to a friendly
+//                  error.
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { CheckCircle2, GraduationCap, MailX, ShieldAlert } from "lucide-react";
@@ -17,9 +23,9 @@ import { useAuth } from "@/auth/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { toast } from "@/components/ui/use-toast";
 import { ApiClientError } from "@/lib/api";
 import { acceptInvitation, lookupInvitation } from "@/lib/invitations";
+import type { SignInLocationState } from "@/pages/SignInPage";
 
 type LookupState =
   | { kind: "loading" }
@@ -30,7 +36,7 @@ export function AcceptInvitationPage() {
   const [params] = useSearchParams();
   const token = params.get("token");
   const navigate = useNavigate();
-  const { status: authStatus, refresh } = useAuth();
+  const { status: authStatus } = useAuth();
 
   const [lookup, setLookup] = useState<LookupState>(() =>
     token ? { kind: "loading" } : { kind: "missing-token" },
@@ -92,7 +98,7 @@ export function AcceptInvitationPage() {
     }
     setSubmitting(true);
     try {
-      await acceptInvitation({
+      const result = await acceptInvitation({
         token,
         email: validResult.email,
         name: name.trim(),
@@ -100,14 +106,17 @@ export function AcceptInvitationPage() {
         confirmPassword,
         terms_accepted: true,
       });
-      // Auto sign-in: backend set the cookie, hydrate AuthContext.
-      await refresh();
-      toast({
-        title: "Welcome aboard",
-        description: "Your account is ready.",
-        variant: "success",
-      });
-      navigate("/app/dashboard", { replace: true });
+      // UNI-60: backend issued an MFA challenge cookie (not a session).
+      // Hand the user off to the sign-in page's MFA-enroll step directly
+      // — `SignInPage` reads this location state and skips its own
+      // credentials prompt. Verify-enroll then mints the real session
+      // and lands the user on /app/dashboard.
+      const signInState: SignInLocationState = {
+        mfaEnrollPending: true,
+        trustedDeviceEligible: result.trusted_device_eligible,
+        invitedEmail: result.email,
+      };
+      navigate("/sign-in", { replace: true, state: signInState });
     } catch (cause) {
       if (cause instanceof ApiClientError) {
         // Backend may surface per-field issues from zod; propagate them.
