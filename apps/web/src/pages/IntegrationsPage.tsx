@@ -1191,6 +1191,25 @@ function SyncDoneStep({ syncRun }: { syncRun: LmsSyncRunPublic }) {
           </ul>
         </div>
       ) : null}
+      {syncRun.conflicts && syncRun.conflicts.length > 0 ? (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
+          <p className="font-medium">
+            {syncRun.conflicts.length} course
+            {syncRun.conflicts.length === 1 ? " was" : "s were"} edited in Hub
+            since the last sync. The LMS values have overwritten those edits.
+          </p>
+          <ul className="mt-1 list-disc pl-5">
+            {syncRun.conflicts.slice(0, 5).map((c, i) => (
+              <li key={i}>
+                <span className="font-medium">{c.course_name}</span>{" "}
+                <span className="font-mono text-[10px] uppercase">
+                  ({c.course_external_id})
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {summary ? (
         <dl className="grid grid-cols-3 gap-3 rounded-md border bg-muted/30 p-3">
           <PreviewStat label="Courses created">{summary.courses_created}</PreviewStat>
@@ -1201,7 +1220,7 @@ function SyncDoneStep({ syncRun }: { syncRun: LmsSyncRunPublic }) {
           <PreviewStat label="Students invited">{summary.students_invited}</PreviewStat>
           <PreviewStat label="Enrollments created">{summary.enrollments_created}</PreviewStat>
           <PreviewStat label="Enrollments updated">{summary.enrollments_updated}</PreviewStat>
-          <PreviewStat label="Enrollments unchanged">{summary.enrollments_unchanged}</PreviewStat>
+          <PreviewStat label="Enrollments dropped">{summary.enrollments_dropped}</PreviewStat>
         </dl>
       ) : null}
     </div>

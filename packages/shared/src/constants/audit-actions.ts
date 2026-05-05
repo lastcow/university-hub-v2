@@ -56,6 +56,15 @@ export const AUDIT_ACTIONS = [
   "lms.provider_config.removed",
   "lms.connected",
   "lms.disconnected",
+  "lms.sync.started",
+  "lms.sync.course.imported",
+  "lms.sync.course.updated",
+  "lms.sync.student.imported",
+  "lms.sync.student.matched",
+  "lms.sync.enrollment.imported",
+  "lms.sync.enrollment.dropped",
+  "lms.sync.completed",
+  "lms.sync.failed",
 ] as const;
 
 export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
@@ -114,6 +123,15 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "lms.provider_config.removed": "LMS provider removed",
   "lms.connected": "LMS account connected",
   "lms.disconnected": "LMS account disconnected",
+  "lms.sync.started": "LMS sync started",
+  "lms.sync.course.imported": "LMS sync — course imported",
+  "lms.sync.course.updated": "LMS sync — course updated",
+  "lms.sync.student.imported": "LMS sync — student imported",
+  "lms.sync.student.matched": "LMS sync — student matched to existing user",
+  "lms.sync.enrollment.imported": "LMS sync — enrollment imported",
+  "lms.sync.enrollment.dropped": "LMS sync — enrollment dropped",
+  "lms.sync.completed": "LMS sync completed",
+  "lms.sync.failed": "LMS sync failed",
 };
 
 /**

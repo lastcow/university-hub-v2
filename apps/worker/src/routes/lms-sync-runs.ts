@@ -11,19 +11,18 @@
 // belongs to the calling user. Cross-user access is cloaked as 404 to
 // match the precedent set by the disconnect handler in UNI-54.
 //
-// Reconciliation/upsert is sub-issue UNI-56. For UNI-55 the runner is a
-// stub that walks a `lms_sync_runs` row through `pending → running →
-// success` over a few seconds, emitting per-step progress into
-// `summary_json.progress` so the UI's polling view has something to
-// render. The structure is intentional: when UNI-56 swaps in the real
-// reconciliation engine, the runner signature stays the same and the
-// route shell does not change.
+// The runner now drives the real reconciliation engine landed in
+// UNI-56 (`apps/worker/src/lms/reconcile.ts`). The route's
+// `runReconciliationForRun` function persists the engine's progress
+// callbacks into `summary_json.progress`, and writes the terminal row
+// (`success` / `partial` / `failed`) once the engine returns.
 
 import {
   type CreateLmsSyncRunResponse,
   type LmsConnectionStatus,
   type LmsConnectionTermsResponse,
   type LmsProviderId,
+  type LmsSyncConflict,
   type LmsSyncError,
   type LmsSyncPreviewResponse,
   type LmsSyncRunProgress,
@@ -40,7 +39,9 @@ import { decryptForUniversity } from "../crypto/field-encryption.js";
 import { execute, queryAll, queryFirst, type Row } from "../db/index.js";
 import type { LmsConnection } from "@university-hub/shared";
 import { lmsProviderRegistry } from "../lms/index.js";
+import { runLmsReconciliation } from "../lms/reconcile.js";
 import { requireAuth, type RequestContext } from "../middleware/auth.js";
+import { writeAuditLog } from "../services/audit.js";
 import { errorResponse, jsonOk } from "../utils/responses.js";
 
 // Module-level term cache. Light caching only — Canvas's "list terms"
@@ -223,6 +224,7 @@ function syncRowToPublic(row: SyncRunRow): LmsSyncRunPublic {
     status: row.status,
     summary: parsedSummary.summary,
     errors: parseErrorsJson(row.error_log_json),
+    conflicts: parsedSummary.conflicts,
     progress: parsedSummary.progress,
   };
 }
@@ -231,29 +233,36 @@ interface ParsedSummary {
   summary: LmsSyncSummary | null;
   progress: LmsSyncRunProgress | null;
   term_name: string | null;
+  conflicts: LmsSyncConflict[] | null;
 }
 
-/** `summary_json` carries three logical fields packed into one column
+/** `summary_json` carries four logical fields packed into one column
  *  to keep the schema unchanged from UNI-51:
  *
- *    - `summary`    : final per-run counts (UNI-56 fills these in).
+ *    - `summary`    : final per-run counts (UNI-56's reconciliation
+ *                     engine fills these).
  *    - `progress`   : in-flight progress signal for UI polling.
  *    - `term_name`  : display label captured at run-start so the UI
  *                     doesn't have to re-fetch the term list to render
  *                     the run history.
+ *    - `conflicts`  : non-error advisories from the engine — courses
+ *                     with manual edits since last sync (LMS still
+ *                     wins; the UI surfaces these as warnings).
  *
  *  Unknown / malformed JSON is treated as null on every field so a
  *  hand-edited row doesn't crash the route. */
 function parseSummaryJson(raw: string | null): ParsedSummary {
-  if (!raw) return { summary: null, progress: null, term_name: null };
+  if (!raw) {
+    return { summary: null, progress: null, term_name: null, conflicts: null };
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { summary: null, progress: null, term_name: null };
+    return { summary: null, progress: null, term_name: null, conflicts: null };
   }
   if (!parsed || typeof parsed !== "object") {
-    return { summary: null, progress: null, term_name: null };
+    return { summary: null, progress: null, term_name: null, conflicts: null };
   }
   const obj = parsed as Record<string, unknown>;
   const summary = obj.summary && typeof obj.summary === "object"
@@ -263,7 +272,10 @@ function parseSummaryJson(raw: string | null): ParsedSummary {
     ? normaliseProgress(obj.progress as Record<string, unknown>)
     : null;
   const term_name = typeof obj.term_name === "string" ? obj.term_name : null;
-  return { summary, progress, term_name };
+  const conflicts = Array.isArray(obj.conflicts)
+    ? (obj.conflicts as LmsSyncConflict[])
+    : null;
+  return { summary, progress, term_name, conflicts };
 }
 
 function normaliseProgress(
@@ -291,11 +303,13 @@ function buildSummaryJson(input: {
   summary: LmsSyncSummary | null;
   progress: LmsSyncRunProgress | null;
   term_name: string | null;
+  conflicts?: LmsSyncConflict[] | null;
 }): string {
   return JSON.stringify({
     summary: input.summary,
     progress: input.progress,
     term_name: input.term_name,
+    conflicts: input.conflicts ?? null,
   });
 }
 
@@ -613,7 +627,7 @@ export async function handleCreateLmsSyncRun(
   const now = new Date().toISOString();
   const initialProgress: LmsSyncRunProgress = {
     current_step: 0,
-    total_steps: STUB_TOTAL_STEPS,
+    total_steps: TOTAL_PROGRESS_STEPS,
     label: "Queued",
   };
   await execute(
@@ -638,13 +652,36 @@ export async function handleCreateLmsSyncRun(
     ],
   );
 
+  let connection: LmsConnection;
+  try {
+    connection = await rowToLmsConnection(ctx, connRow);
+  } catch (cause) {
+    console.error("lms_sync_decrypt_failed", { cause });
+    // Mark the row failed so the polling UI doesn't spin forever, then
+    // surface the failure to the caller.
+    await markRunFailed(ctx, syncRunId, termName, [
+      {
+        scope: "connection",
+        message:
+          cause instanceof Error
+            ? cause.message
+            : "Could not unwrap the LMS access token.",
+      },
+    ]);
+    return errorResponse(
+      500,
+      "internal_error",
+      "Could not unwrap the LMS access token. Reconnect from /app/integrations and try again.",
+    );
+  }
+
   // Schedule the runner so it survives this response. ctx.waitUntil is
   // the Cloudflare Workers contract for "keep this Promise alive after
   // the fetch handler returns". When the handler is invoked from a
   // test harness without an executionCtx, fall back to running inline
   // before responding — the test asserts on the terminal state and we
   // want the row mutated either way.
-  const runnerPromise = runStubSync(ctx, {
+  const runnerPromise = runReconciliationForRun(ctx, provider, connection, {
     syncRunId,
     userId: actor.id,
     connectionId: connRow.id,
@@ -711,8 +748,13 @@ export async function handleListLmsSyncRuns(
 }
 
 // ---------------------------------------------------------------------------
-// Stub runner (UNI-55 Phase-1 placeholder). UNI-56 replaces with the
-// real reconciliation engine.
+// Reconciliation runner (UNI-56). The route layer owns the lifecycle
+// of the `lms_sync_runs` row — initial INSERT (`pending`), per-step
+// progress UPDATEs (`running`), terminal UPDATE (`success` /
+// `partial` / `failed`). The actual reconciliation work lives in
+// `apps/worker/src/lms/reconcile.ts`; this function is the glue that
+// translates engine progress callbacks into D1 writes and persists
+// the engine's terminal result.
 // ---------------------------------------------------------------------------
 
 interface RunnerInput {
@@ -723,86 +765,120 @@ interface RunnerInput {
   termName: string | null;
 }
 
-const STUB_TOTAL_STEPS = 4;
-/** Step delay during the placeholder run. Short enough that QA can
- *  watch it complete in a deploy preview, long enough that the polling
- *  UI sees more than one transition. UNI-56 will replace this with
- *  real per-row work and should not need to keep this constant. */
-const STUB_STEP_DELAY_MS = 1500;
-/** Test seam: tests pass `0` so the placeholder runs synchronously. */
-let stubStepDelayOverrideMs: number | null = null;
-export function __setStubStepDelayMsForTest(ms: number | null): void {
-  stubStepDelayOverrideMs = ms;
-}
+const TOTAL_PROGRESS_STEPS = 4;
 
-async function runStubSync(
+async function runReconciliationForRun(
   ctx: RequestContext,
+  provider: ReturnType<typeof lmsProviderRegistry.get>,
+  connection: LmsConnection,
   input: RunnerInput,
 ): Promise<void> {
-  const stepDelay =
-    stubStepDelayOverrideMs ?? STUB_STEP_DELAY_MS;
+  if (!provider) {
+    // Defensive: the route already validated the provider exists; if it
+    // disappears between the validation and here, fail the run cleanly
+    // instead of throwing.
+    await markRunFailed(ctx, input.syncRunId, input.termName, [
+      {
+        scope: "connection",
+        message: `LMS provider '${connection.provider_id}' is not registered on this build.`,
+      },
+    ]);
+    return;
+  }
+  // Flip pending → running so the polling UI gets a transition the
+  // moment work begins. Progress will keep getting bumped via the
+  // engine's onProgress callback.
   try {
-    await stepTransition(ctx, input, "running", {
-      current_step: 1,
-      total_steps: STUB_TOTAL_STEPS,
-      label: "Listing courses",
-    });
-    await sleep(stepDelay);
-
-    await stepTransition(ctx, input, "running", {
-      current_step: 2,
-      total_steps: STUB_TOTAL_STEPS,
-      label: "Listing enrollments",
-    });
-    await sleep(stepDelay);
-
-    await stepTransition(ctx, input, "running", {
-      current_step: 3,
-      total_steps: STUB_TOTAL_STEPS,
-      label: "Reconciliation engine pending (UNI-56)",
-    });
-    await sleep(stepDelay);
-
-    // UNI-56 fills these counts in once the reconciliation engine lands.
-    // The placeholder records all-zero counts so the SPA's completion
-    // pane has a stable shape to render from day one.
-    const finalSummary: LmsSyncSummary = {
-      courses_created: 0,
-      courses_updated: 0,
-      courses_unchanged: 0,
-      students_created: 0,
-      students_matched: 0,
-      students_invited: 0,
-      enrollments_created: 0,
-      enrollments_updated: 0,
-      enrollments_unchanged: 0,
-    };
-
-    const completedAt = new Date().toISOString();
     await execute(
       ctx.env.DB,
       `UPDATE lms_sync_runs
-          SET status = ?, completed_at = ?, summary_json = ?
+          SET status = ?, summary_json = ?
         WHERE id = ?`,
       [
-        "success" satisfies LmsSyncRunStatus,
-        completedAt,
+        "running" satisfies LmsSyncRunStatus,
         buildSummaryJson({
-          summary: finalSummary,
+          summary: null,
           progress: {
-            current_step: STUB_TOTAL_STEPS,
-            total_steps: STUB_TOTAL_STEPS,
-            label: "Done",
+            current_step: 0,
+            total_steps: TOTAL_PROGRESS_STEPS,
+            label: "Starting",
           },
           term_name: input.termName,
         }),
         input.syncRunId,
       ],
     );
+  } catch (cause) {
+    console.warn("lms_sync_running_marker_failed", {
+      sync_run_id: input.syncRunId,
+      cause,
+    });
+  }
 
-    // Refresh the connection's last_synced_at so the integrations page
-    // shows the right timestamp on reload. Best-effort — a failure
-    // here doesn't downgrade the run.
+  try {
+    const result = await runLmsReconciliation(
+      { db: ctx.env.DB, provider },
+      {
+        syncRunId: input.syncRunId,
+        actorUserId: input.userId,
+        connection,
+        termId: input.termId,
+        termName: input.termName,
+        onProgress: async (progress) => {
+          try {
+            await execute(
+              ctx.env.DB,
+              `UPDATE lms_sync_runs
+                  SET status = ?, summary_json = ?
+                WHERE id = ?`,
+              [
+                "running" satisfies LmsSyncRunStatus,
+                buildSummaryJson({
+                  summary: null,
+                  progress,
+                  term_name: input.termName,
+                }),
+                input.syncRunId,
+              ],
+            );
+          } catch (cause) {
+            console.warn("lms_sync_progress_write_failed", {
+              sync_run_id: input.syncRunId,
+              cause,
+            });
+          }
+        },
+      },
+    );
+
+    const completedAt = new Date().toISOString();
+    await execute(
+      ctx.env.DB,
+      `UPDATE lms_sync_runs
+          SET status = ?, completed_at = ?, summary_json = ?, error_log_json = ?
+        WHERE id = ?`,
+      [
+        result.status satisfies LmsSyncRunStatus,
+        completedAt,
+        buildSummaryJson({
+          summary: result.summary,
+          progress: {
+            current_step: TOTAL_PROGRESS_STEPS,
+            total_steps: TOTAL_PROGRESS_STEPS,
+            label: "Done",
+          },
+          term_name: input.termName,
+          conflicts: result.conflicts.length > 0 ? result.conflicts : null,
+        }),
+        result.errors.length > 0 ? JSON.stringify(result.errors) : null,
+        input.syncRunId,
+      ],
+    );
+
+    // Best-effort: bump the connection's last_synced_at so the
+    // integrations page shows the right timestamp on reload. A failure
+    // here doesn't downgrade the run — the row's status reflects what
+    // the engine reported.
     try {
       await execute(
         ctx.env.DB,
@@ -817,65 +893,65 @@ async function runStubSync(
       });
     }
   } catch (cause) {
-    console.error("lms_stub_runner_failed", {
+    console.error("lms_reconcile_runner_failed", {
       sync_run_id: input.syncRunId,
       cause,
     });
-    const errors: LmsSyncError[] = [
-      {
-        scope: "connection",
-        message:
-          cause instanceof Error
-            ? cause.message
-            : "Stub runner failed before completing.",
+    const message =
+      cause instanceof Error
+        ? cause.message
+        : "Reconciliation runner failed before completing.";
+    await markRunFailed(ctx, input.syncRunId, input.termName, [
+      { scope: "connection", message },
+    ]);
+    // Audit the unhandled failure so the audit page surfaces it.
+    await writeAuditLog(ctx.env.DB, {
+      action: "lms.sync.failed",
+      actorUserId: input.userId,
+      universityId: null,
+      entityType: "lms_sync_run",
+      entityId: input.syncRunId,
+      metadata: {
+        connection_id: input.connectionId,
+        reason: message,
+        stage: "runner",
       },
-    ];
-    try {
-      await execute(
-        ctx.env.DB,
-        `UPDATE lms_sync_runs
-            SET status = ?, completed_at = ?, error_log_json = ?
-          WHERE id = ?`,
-        [
-          "failed" satisfies LmsSyncRunStatus,
-          new Date().toISOString(),
-          JSON.stringify(errors),
-          input.syncRunId,
-        ],
-      );
-    } catch (writeCause) {
-      console.error("lms_stub_runner_failure_write_failed", {
-        sync_run_id: input.syncRunId,
-        cause: writeCause,
-      });
-    }
+    });
   }
 }
 
-async function stepTransition(
+async function markRunFailed(
   ctx: RequestContext,
-  input: RunnerInput,
-  status: LmsSyncRunStatus,
-  progress: LmsSyncRunProgress,
+  syncRunId: string,
+  termName: string | null,
+  errors: LmsSyncError[],
 ): Promise<void> {
-  await execute(
-    ctx.env.DB,
-    `UPDATE lms_sync_runs
-        SET status = ?, summary_json = ?
-      WHERE id = ?`,
-    [
-      status,
-      buildSummaryJson({
-        summary: null,
-        progress,
-        term_name: input.termName,
-      }),
-      input.syncRunId,
-    ],
-  );
-}
-
-function sleep(ms: number): Promise<void> {
-  if (ms <= 0) return Promise.resolve();
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  try {
+    await execute(
+      ctx.env.DB,
+      `UPDATE lms_sync_runs
+          SET status = ?, completed_at = ?, summary_json = ?, error_log_json = ?
+        WHERE id = ?`,
+      [
+        "failed" satisfies LmsSyncRunStatus,
+        new Date().toISOString(),
+        buildSummaryJson({
+          summary: null,
+          progress: {
+            current_step: TOTAL_PROGRESS_STEPS,
+            total_steps: TOTAL_PROGRESS_STEPS,
+            label: "Failed",
+          },
+          term_name: termName,
+        }),
+        JSON.stringify(errors),
+        syncRunId,
+      ],
+    );
+  } catch (writeCause) {
+    console.error("lms_sync_failure_write_failed", {
+      sync_run_id: syncRunId,
+      cause: writeCause,
+    });
+  }
 }

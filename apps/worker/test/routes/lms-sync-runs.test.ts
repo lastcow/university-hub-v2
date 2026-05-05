@@ -34,7 +34,6 @@ import { lmsProviderRegistry } from "../../src/lms/index.js";
 import type { LmsProvider } from "../../src/lms/provider.js";
 import {
   __resetLmsTermsCacheForTest,
-  __setStubStepDelayMsForTest,
   handleCreateLmsSyncRun,
   handleGetLmsSyncRun,
   handleListLmsConnectionTerms,
@@ -173,8 +172,25 @@ function makeDb(seed: SeedOpts = {}) {
         error_log_json: null,
       });
     } else if (sql.startsWith("UPDATE lms_sync_runs")) {
-      // Two flavours: progress update and terminal update.
-      if (sql.includes("SET status = ?, completed_at = ?, summary_json = ?")) {
+      // Several flavours: progress / running marker / terminal w/ summary
+      // and errors / terminal w/ summary only / terminal w/ errors only.
+      if (
+        sql.includes(
+          "SET status = ?, completed_at = ?, summary_json = ?, error_log_json = ?",
+        )
+      ) {
+        const [status, completed_at, summary_json, error_log_json, id] =
+          params as [string, string, string, string | null, string];
+        const row = syncRuns.find((r) => r.id === id);
+        if (row) {
+          row.status = status;
+          row.completed_at = completed_at;
+          row.summary_json = summary_json;
+          row.error_log_json = error_log_json;
+        }
+      } else if (
+        sql.includes("SET status = ?, completed_at = ?, summary_json = ?")
+      ) {
         const [status, completed_at, summary_json, id] = params as [
           string,
           string,
@@ -363,12 +379,10 @@ let realCanvasProvider: LmsProvider | undefined;
 
 beforeEach(() => {
   __resetLmsTermsCacheForTest();
-  __setStubStepDelayMsForTest(0);
   realCanvasProvider = lmsProviderRegistry.get("canvas");
 });
 
 afterEach(() => {
-  __setStubStepDelayMsForTest(null);
   if (realCanvasProvider) {
     lmsProviderRegistry.register(realCanvasProvider);
   }

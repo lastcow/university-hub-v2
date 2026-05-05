@@ -59,11 +59,29 @@ export interface DisclosureConsentListItem extends DisclosureConsent {
   active: boolean;
 }
 
+/** Legal basis for a disclosure under FERPA. Defaults to `'consent'` for
+ *  any §99.30-style written consent — the original UNI-32 surface. The
+ *  LMS reconciliation engine (UNI-56) records system-attributed
+ *  disclosures under `'school_official_exception'` (§99.31(a)(1)),
+ *  which does not require a per-student consent and therefore leaves
+ *  `consent_id` null. The schema enforces the invariant that
+ *  `basis === 'consent' ⇔ consent_id IS NOT NULL`. */
+export type DisclosureBasis =
+  | "consent"
+  | "school_official_exception"
+  | "directory_info"
+  | "judicial_order"
+  | "other";
+
 export interface DisclosureLogEntry {
   id: Id;
   student_user_id: Id;
   university_id: Id | null;
-  consent_id: Id;
+  /** Null when `basis !== 'consent'` — non-consent disclosures (LMS
+   *  sync, judicial orders, etc.) cite the relevant FERPA basis
+   *  instead of a written consent. */
+  consent_id: Id | null;
+  basis: DisclosureBasis;
   released_to: string;
   data_categories: DisclosureDataCategory[];
   notes: string | null;

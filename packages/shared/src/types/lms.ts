@@ -156,7 +156,14 @@ export interface LmsEnrollment {
 }
 
 /** Per-run counts emitted by the reconciliation engine and surfaced in
- *  the sync UI. Lives in `lms_sync_runs.summary_json`. */
+ *  the sync UI. Lives in `lms_sync_runs.summary_json`.
+ *
+ *  Phase 1 lock (UNI-56): `students_invited` is **always 0**. The
+ *  reconciliation engine does not send invitation emails — synced
+ *  students are auto-created with `status = 'pending'` and a future
+ *  Phase-2 admin-driven bulk-invitation UI fills this counter. The
+ *  field is kept on the type so the SPA's completion summary doesn't
+ *  have to be reshuffled when Phase 2 lands. */
 export interface LmsSyncSummary {
   courses_created: number;
   courses_updated: number;
@@ -167,6 +174,11 @@ export interface LmsSyncSummary {
   enrollments_created: number;
   enrollments_updated: number;
   enrollments_unchanged: number;
+  /** Course assignments soft-deleted because the LMS no longer reports
+   *  them in the term's roster. Rows are flipped to `status = 'dropped'`
+   *  rather than physically removed so the audit trail and FERPA
+   *  record-of-disclosure chain are preserved. */
+  enrollments_dropped: number;
 }
 
 /** A single per-row error captured during a sync. Lives in
@@ -177,6 +189,19 @@ export interface LmsSyncError {
   /** Provider-native id, if known. */
   external_id?: string;
   message: string;
+}
+
+/** A non-error advisory captured during a sync. Today the only kind
+ *  is "manual edit overwritten" — the engine detects rows that were
+ *  hand-edited since the last sync (per the epic's locked decision the
+ *  LMS still wins on re-sync, but the UI should warn the user). The
+ *  shape is open-ended via the `reason` discriminator so future
+ *  conflict kinds (e.g. `cross_provider_collision`) can extend it
+ *  without a breaking change. */
+export interface LmsSyncConflict {
+  course_external_id: string;
+  course_name: string;
+  reason: "manual_edit_overwritten";
 }
 
 /** A persisted run record. */
@@ -190,6 +215,7 @@ export interface LmsSyncRun {
   status: LmsSyncRunStatus;
   summary: LmsSyncSummary | null;
   errors: LmsSyncError[] | null;
+  conflicts: LmsSyncConflict[] | null;
 }
 
 /**
@@ -410,6 +436,9 @@ export interface LmsSyncRunPublic {
   status: LmsSyncRunStatus;
   summary: LmsSyncSummary | null;
   errors: LmsSyncError[] | null;
+  /** Non-error advisories emitted by the reconciliation engine. The
+   *  SPA renders these as warnings on the completion summary. */
+  conflicts: LmsSyncConflict[] | null;
   progress: LmsSyncRunProgress | null;
 }
 
