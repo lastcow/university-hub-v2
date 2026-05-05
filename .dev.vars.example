@@ -86,3 +86,10 @@ SUPPORT_EMAIL=support@example.com
 # RETENTION_ARCHIVE_GRADES_DAYS=
 # RETENTION_ARCHIVE_ASSESSMENTS_DAYS=
 # RETENTION_ARCHIVE_COURSE_ASSIGNMENTS_DAYS=
+
+# LMS field-level encryption (UNI-51). Required for any LMS code path
+# in production; can be left unset locally until you exercise LMS sync.
+# Rotation procedure documented in docs/encryption.md. Use a long random
+# string (e.g. `openssl rand -base64 48`) — HKDF derives a per-university
+# 256-bit key from this master.
+# LMS_TOKEN_ENCRYPTION_KEY=replace-with-long-random-string

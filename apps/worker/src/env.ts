@@ -142,6 +142,16 @@ export interface Env {
   RETENTION_ARCHIVE_GRADES_DAYS?: string;              // default: unset (skip)
   RETENTION_ARCHIVE_ASSESSMENTS_DAYS?: string;         // default: unset (skip)
   RETENTION_ARCHIVE_COURSE_ASSIGNMENTS_DAYS?: string;  // default: unset (skip)
+
+  // Field-level encryption master key for LMS OAuth secrets + bearer
+  // tokens (UNI-51). Stored secrets in `lms_provider_configs` and
+  // `lms_connections` are wrapped in AES-GCM with a per-university key
+  // derived from this master via HKDF-SHA-256 (apps/worker/src/crypto/
+  // field-encryption.ts). Required at runtime on any LMS code path:
+  // encrypt/decrypt fail closed if unset. Rotation invalidates every
+  // existing ciphertext (the runbook in docs/encryption.md walks
+  // through the re-encrypt-on-next-sync convergence path).
+  LMS_TOKEN_ENCRYPTION_KEY?: string;
 }
 
 export function isProduction(env: Env): boolean {
