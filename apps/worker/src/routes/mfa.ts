@@ -40,13 +40,18 @@ import {
   type SessionUser,
 } from "@university-hub/shared";
 
+import { computeDeviceFingerprint } from "../auth/device-fingerprint.js";
 import {
   createMfaChallenge,
   deleteAllMfaChallengesForUser,
   deleteMfaChallenge,
   resolveMfaChallenge,
 } from "../auth/mfa-challenge.js";
-import { roleRequiresMfa } from "../auth/mfa-policy.js";
+import {
+  roleAlwaysChallenges,
+  roleRequiresMfa,
+  roleUsesRiskBasedMfa,
+} from "../auth/mfa-policy.js";
 import {
   RECOVERY_CODE_TOTAL,
   consumeRecoveryCode,
@@ -58,7 +63,9 @@ import {
 import { verifyPassword } from "../auth/password.js";
 import { createSession, toSessionUser, type UserRow } from "../auth/session.js";
 import {
+  countTrustedDevicesForUser,
   createTrustedDevice,
+  recordFingerprintMfaSuccess,
   revokeAllTrustedDevicesForUser,
 } from "../auth/trusted-device.js";
 import {
@@ -76,7 +83,10 @@ import {
   rateLimitedResponse,
 } from "../middleware/rate-limit.js";
 import { writeAuditLog } from "../services/audit.js";
-import { getMfaTrustedDeviceDays } from "../services/system-settings.js";
+import {
+  getMfaRevalidationDays,
+  getMfaTrustedDeviceDays,
+} from "../services/system-settings.js";
 import {
   buildMfaChallengeClearCookie,
   buildSessionSetCookie,
@@ -206,6 +216,59 @@ function appendCookie(headers: Headers, cookie: string): void {
   headers.append("set-cookie", cookie);
 }
 
+/**
+ * Record a successful MFA event against the user's device fingerprint
+ * (UNI-49). Called from both `verify-enroll` and `challenge` handlers
+ * after a TOTP code is accepted; recovery-code success deliberately does
+ * NOT record a fingerprint trust because recovery codes are an account-
+ * recovery surface, not a "this device is mine" assertion.
+ *
+ * The fingerprint row is what lets the next sign-in skip MFA inside the
+ * revalidation window. It's stored only when the user explicitly opts
+ * in via the "Trust this device" checkbox on the challenge page —
+ * mirroring how UNI-47's cookie grant requires the same checkbox for
+ * `university_admin`. Without an opt-in we keep challenging on every
+ * sign-in. (A user who shares a kiosk or hotel browser doesn't tick the
+ * box, so no row is written; the next session must re-MFA.)
+ *
+ * Audit: writes `mfa.device_seen` with the fingerprint id and whether
+ * the row was new vs. refreshed. Runs only for roles that participate in
+ * the risk-based gate (i.e. NOT admins) — admins are always-challenge
+ * and there's no value in tracking their fingerprints.
+ */
+async function recordRiskFingerprint(
+  ctx: RequestContext,
+  user: MfaUserRow,
+): Promise<void> {
+  if (!roleUsesRiskBasedMfa(user.role)) return;
+  const ip = clientIpFromCtx(ctx);
+  const userAgent = ctx.request.headers.get("user-agent");
+  const acceptLanguage = ctx.request.headers.get("accept-language");
+  const fingerprint = await computeDeviceFingerprint(ctx.env, {
+    userAgent,
+    acceptLanguage,
+    ip,
+  });
+  const result = await recordFingerprintMfaSuccess(ctx.env.DB, {
+    userId: user.id,
+    deviceFingerprintHash: fingerprint.hash,
+    label: fingerprint.label,
+    ipAddress: ip,
+    userAgent,
+  });
+  await writeAuditLog(ctx.env.DB, {
+    action: "mfa.device_seen",
+    actorUserId: user.id,
+    universityId: user.university_id,
+    entityType: "trusted_device",
+    entityId: result.id,
+    metadata: {
+      role: user.role,
+      is_new: result.isNew,
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // POST /api/auth/mfa/enroll
 //
@@ -331,6 +394,13 @@ export async function handleMfaVerifyEnroll(
   });
 
   await deleteMfaChallenge(ctx.env.DB, token);
+
+  // First-time enrollment implicitly trusts the enrolling device for
+  // non-admin roles (UNI-49). Without this the user gets bounced through
+  // a TOTP challenge on the very next sign-in from the same browser,
+  // which is surprising onboarding UX. Admins always re-challenge so the
+  // record-fingerprint helper no-ops for them by role guard.
+  await recordRiskFingerprint(ctx, { ...user, mfa_enabled_at: now });
 
   const { sessionUser, setCookie } = await issueSessionForUser(ctx, user);
 
@@ -466,21 +536,24 @@ export async function handleMfaChallenge(
     buildMfaChallengeClearCookie(ctx.env, mfaChallengeCookieName(ctx.env)),
   );
 
-  // Trusted-device grant (UNI-47). Honored only when the user is
-  // university_admin AND ticked "Remember this device" — super_admin is
-  // always-MFA, and TOTP enrollment / first-time verify-enroll never
-  // grants trust (the user re-MFAs once on the next sign-in by design).
-  // Grant happens after the row was matched by TOTP; recovery-code
-  // success is intentionally NOT eligible to grant trust because
-  // recovery codes are an account-recovery surface, not a "this device
-  // is mine" assertion.
-  if (
-    parsed.data.remember_device === true &&
-    !usedRecovery &&
-    user.role === "university_admin"
-  ) {
-    const trustCookie = await grantTrustedDevice(ctx, user);
-    if (trustCookie) appendCookie(headers, trustCookie);
+  // Trusted-device grant. Two paths, both gated on TOTP success (recovery
+  // codes intentionally NOT eligible — they are an account-recovery
+  // surface, not a "this device is mine" assertion):
+  //
+  //   - UNI-47 cookie bypass: `university_admin` who ticked "Remember
+  //     this device" gets a signed cookie + exact-IP gate.
+  //   - UNI-49 risk-based bypass: any non-admin role that ticked
+  //     "Trust this device" gets a server-side fingerprint row keyed on
+  //     UA + Accept-Language + IP /16.
+  //
+  // `super_admin` is always-MFA and gets neither path.
+  if (parsed.data.remember_device === true && !usedRecovery) {
+    if (user.role === "university_admin") {
+      const trustCookie = await grantTrustedDevice(ctx, user);
+      if (trustCookie) appendCookie(headers, trustCookie);
+    } else if (roleUsesRiskBasedMfa(user.role)) {
+      await recordRiskFingerprint(ctx, user);
+    }
   }
 
   const body: MfaVerifyResponse = { user: sessionUser };
@@ -548,6 +621,21 @@ export async function handleMfaStatus(
   if (!user) {
     return errorResponse(404, "user_not_found", "User not found.");
   }
+  // UNI-49: any authenticated user gets a clean payload here. UNI-48
+  // surfaced "couldn't load MFA status" for faculty because the Settings
+  // page hit unimplemented endpoints; this shape now serves every role.
+  const trustedDeviceCount = await countTrustedDevicesForUser(
+    ctx.env.DB,
+    user.id,
+  );
+  const lastMfaAt = await queryFirst<{ last: string | null }>(
+    ctx.env.DB,
+    `SELECT MAX(last_mfa_at) AS last
+       FROM trusted_devices
+      WHERE user_id = ?`,
+    [user.id],
+  );
+  const revalidationDays = await getMfaRevalidationDays(ctx.env.DB);
   const body: MfaStatusResponse = {
     required: roleRequiresMfa(user.role),
     enrolled: Boolean(user.mfa_enabled_at),
@@ -555,6 +643,9 @@ export async function handleMfaStatus(
     recovery_codes_remaining: parseRecoveryHashes(
       user.mfa_recovery_codes_hash,
     ).length,
+    last_mfa_at: lastMfaAt?.last ?? null,
+    trusted_device_count: trustedDeviceCount,
+    revalidation_days: revalidationDays,
   };
   return jsonOk(body);
 }

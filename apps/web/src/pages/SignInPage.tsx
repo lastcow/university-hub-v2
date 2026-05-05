@@ -44,9 +44,9 @@ export function SignInPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  // UNI-47: surfaced from the sign-in response. True only when the user
-  // who supplied valid credentials is a `university_admin`. Drives the
-  // "Remember this device" checkbox visibility on the challenge step.
+  // Surfaced from the sign-in response. UNI-47 (university_admin) and
+  // UNI-49 (every non-super_admin role) both drive the checkbox via this
+  // flag; super_admin is always-MFA and always false.
   const [trustedDeviceEligible, setTrustedDeviceEligible] = useState(false);
 
   const fromState = (location.state as LocationState | null)?.from;
@@ -450,10 +450,10 @@ function MfaChallengeStep({
 }) {
   const [code, setCode] = useState("");
   const [usingRecovery, setUsingRecovery] = useState(false);
-  // UNI-47: "Remember this device for N days" checkbox. Default
-  // unchecked per the issue — the user has to opt in. Hidden when the
-  // user is not eligible (super_admin, today the only ineligible MFA
-  // role) so super_admin sign-ins never carry the option.
+  // "Trust this device" checkbox. UNI-47 mints a signed cookie for
+  // university_admin; UNI-49 records a server-side fingerprint for every
+  // non-admin role. Default unchecked per the issue — the user has to
+  // opt in. Hidden for super_admin (always-MFA).
   const [rememberDevice, setRememberDevice] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -538,9 +538,9 @@ function MfaChallengeStep({
             className="mt-0.5 h-4 w-4 rounded border border-input"
           />
           <span>
-            Remember this device. Skip the verification code on future
-            sign-ins from this browser and IP. Use only on devices you
-            trust.
+            Trust this device. Skip the verification code on future
+            sign-ins from this browser and network. Use only on devices
+            you control.
           </span>
         </label>
       ) : null}

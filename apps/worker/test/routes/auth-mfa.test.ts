@@ -1,11 +1,13 @@
-// Sign-in / MFA gate test (UNI-24).
+// Sign-in / MFA gate test (UNI-24, extended for UNI-49).
 //
-// Asserts that the role-based MFA gate is wired up:
-//   - For roles in MFA_REQUIRED_ROLES, /api/auth/sign-in does NOT issue a
-//     session cookie. Instead it sets the mfa_challenge cookie and the body
-//     reports `status: "mfa_required"`.
-//   - For other roles, the existing behaviour is unchanged: session cookie
-//     set, `status: "ok"`.
+// UNI-49 generalized the MFA requirement to every authenticated role.
+// Asserts that:
+//   - super_admin / university_admin go through TOTP on every sign-in
+//     (the always-challenge bucket; UNI-47 cookie bypass for
+//     university_admin is exercised separately in trusted-devices.test).
+//   - non-admin roles also fall through to the MFA challenge — but the
+//     `trusted_device_eligible` flag is `true`, so the SPA renders the
+//     "Trust this device" checkbox.
 //
 // Lower-level handlers (verify-enroll, challenge, etc.) are exercised
 // indirectly via the TOTP and recovery-code unit tests. End-to-end click
@@ -121,17 +123,20 @@ function setCookies(res: Response): string[] {
 }
 
 describe("/api/auth/sign-in — MFA gate", () => {
-  it("issues a session immediately for non-MFA roles", async () => {
+  it("issues an MFA challenge for non-admin roles too (UNI-49)", async () => {
     const user = await fixture("staff");
     const { res, body } = await callSignIn(user);
     expect(res.status).toBe(200);
-    expect(body?.status).toBe("ok");
-    if (body?.status === "ok") {
-      expect(body.user.id).toBe(user.id);
+    expect(body?.status).toBe("mfa_required");
+    if (body?.status === "mfa_required") {
+      expect(body.mfa_enrolled).toBe(false);
+      // Non-admin → checkbox shown so they can opt into the risk-based
+      // bypass on their next sign-in.
+      expect(body.trusted_device_eligible).toBe(true);
     }
     const cookies = setCookies(res).join(" | ");
-    expect(cookies).toContain("university_hub_session=");
-    expect(cookies).not.toContain("university_hub_mfa_challenge=");
+    expect(cookies).toContain("university_hub_mfa_challenge=");
+    expect(cookies).not.toContain("university_hub_session=");
   });
 
   it("issues an MFA challenge cookie and 'mfa_required' body for super_admin", async () => {
@@ -141,6 +146,8 @@ describe("/api/auth/sign-in — MFA gate", () => {
     expect(body?.status).toBe("mfa_required");
     if (body?.status === "mfa_required") {
       expect(body.mfa_enrolled).toBe(false);
+      // super_admin always-MFA → checkbox hidden.
+      expect(body.trusted_device_eligible).toBe(false);
     }
     const cookies = setCookies(res).join(" | ");
     expect(cookies).toContain("university_hub_mfa_challenge=");
@@ -152,6 +159,10 @@ describe("/api/auth/sign-in — MFA gate", () => {
     const { res, body } = await callSignIn(user);
     expect(res.status).toBe(200);
     expect(body?.status).toBe("mfa_required");
+    if (body?.status === "mfa_required") {
+      // university_admin keeps the UNI-47 cookie-bypass option.
+      expect(body.trusted_device_eligible).toBe(true);
+    }
   });
 
   it("reports mfa_enrolled=true when the user already has mfa_enabled_at", async () => {

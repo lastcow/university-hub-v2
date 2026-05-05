@@ -70,12 +70,16 @@ export type UpdateSettingsAccountInput = z.infer<
   typeof updateSettingsAccountInputSchema
 >;
 
-// PATCH /api/settings/system — super_admin-only scalars (UNI-47).
+// PATCH /api/settings/system — super_admin-only scalars (UNI-47, UNI-49).
 //
 // `mfa_trusted_device_days`: rolling window for the "Remember this device"
 // MFA bypass for `university_admin`. Bounded 1..90 to prevent both an
 // always-on bypass (window=0 disables; documented as a server-side
 // minimum of 1 day) and a runaway "trust forever" misconfiguration.
+//
+// `mfa_revalidation_days` (UNI-49): rolling window for the risk-based
+// MFA gate that applies to non-admin roles. Wider cap (1..365) because
+// the failure mode is a re-prompt, not a long-lived cookie.
 export const updateSystemSettingsInputSchema = z
   .object({
     mfa_trusted_device_days: z
@@ -84,10 +88,21 @@ export const updateSystemSettingsInputSchema = z
       .min(1, "Days must be at least 1")
       .max(90, "Days must be at most 90")
       .optional(),
+    mfa_revalidation_days: z
+      .number()
+      .int("Days must be a whole number")
+      .min(1, "Days must be at least 1")
+      .max(365, "Days must be at most 365")
+      .optional(),
   })
-  .refine((data) => data.mfa_trusted_device_days !== undefined, {
-    message: "At least one field is required",
-  });
+  .refine(
+    (data) =>
+      data.mfa_trusted_device_days !== undefined ||
+      data.mfa_revalidation_days !== undefined,
+    {
+      message: "At least one field is required",
+    },
+  );
 export type UpdateSystemSettingsInput = z.infer<
   typeof updateSystemSettingsInputSchema
 >;

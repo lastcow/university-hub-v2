@@ -22,7 +22,12 @@ import {
   type SignInResponse,
 } from "@university-hub/shared";
 
-import { roleRequiresMfa } from "../auth/mfa-policy.js";
+import { computeDeviceFingerprint } from "../auth/device-fingerprint.js";
+import {
+  roleAlwaysChallenges,
+  roleRequiresMfa,
+  roleUsesRiskBasedMfa,
+} from "../auth/mfa-policy.js";
 import { verifyPassword } from "../auth/password.js";
 import {
   createSession,
@@ -31,9 +36,12 @@ import {
 } from "../auth/session.js";
 import {
   deleteTrustedDeviceById,
+  findTrustedDeviceByFingerprint,
   resolveTrustedDeviceByToken,
   touchTrustedDeviceLastUsed,
+  touchTrustedDeviceSeen,
 } from "../auth/trusted-device.js";
+import { getMfaRevalidationDays } from "../services/system-settings.js";
 import { execute, queryFirst } from "../db/index.js";
 import type { RequestContext } from "../middleware/auth.js";
 import {
@@ -114,6 +122,63 @@ async function tryTrustedDeviceBypass(
     metadata: {
       ip_match: true,
       role: user.role,
+    },
+  });
+  return true;
+}
+
+/**
+ * UNI-49 risk-based MFA gate for non-admin roles.
+ *
+ *   - `super_admin` and `university_admin` go through the every-time
+ *     challenge path and never reach this function.
+ *   - For roles in the risk-based bucket (faculty, teacher,
+ *     teacher_assistant, student, staff, guest, viewer), we look up a
+ *     trusted-device row keyed on (user_id, server-side fingerprint). If
+ *     the row exists and `last_mfa_at` is within `mfa_revalidation_days`,
+ *     we skip the challenge and bump `last_seen_at`. Otherwise the user
+ *     is challenged and a fresh fingerprint row will be written on the
+ *     next successful TOTP.
+ *
+ * Returns `true` to bypass MFA, `false` to fall through to the normal
+ * challenge. The fingerprint is recomputed on every sign-in attempt;
+ * SESSION_SECRET rotation invalidates the row by failing re-derivation
+ * under the new key, mirroring the session / cookie surfaces.
+ */
+async function tryRevalidationWindowBypass(
+  ctx: RequestContext,
+  user: MfaUserRow,
+  requestIp: string,
+): Promise<boolean> {
+  if (!roleUsesRiskBasedMfa(user.role)) return false;
+  if (!user.mfa_enabled_at) return false; // not enrolled — must run enroll flow
+  const fingerprint = await computeDeviceFingerprint(ctx.env, {
+    userAgent: ctx.request.headers.get("user-agent"),
+    acceptLanguage: ctx.request.headers.get("accept-language"),
+    ip: requestIp,
+  });
+  const row = await findTrustedDeviceByFingerprint(
+    ctx.env.DB,
+    user.id,
+    fingerprint.hash,
+  );
+  if (!row || !row.last_mfa_at) return false;
+
+  const revalDays = await getMfaRevalidationDays(ctx.env.DB);
+  const cutoffMs = Date.now() - revalDays * 24 * 60 * 60 * 1000;
+  if (Date.parse(row.last_mfa_at) < cutoffMs) return false;
+
+  await touchTrustedDeviceSeen(ctx.env.DB, row.id);
+  await writeAuditLog(ctx.env.DB, {
+    action: "mfa.bypassed_via_revalidation_window",
+    actorUserId: user.id,
+    universityId: user.university_id,
+    entityType: "trusted_device",
+    entityId: row.id,
+    metadata: {
+      role: user.role,
+      revalidation_days: revalDays,
+      last_mfa_at: row.last_mfa_at,
     },
   });
   return true;
@@ -205,29 +270,36 @@ export async function handleSignIn(ctx: RequestContext): Promise<Response> {
     );
   }
 
-  // MFA gate: if the role requires it, hand off to the challenge flow
-  // instead of issuing a session. The actual `auth.sign_in` audit row is
-  // written when the session is finally created in routes/mfa.ts.
+  // MFA gate: every authenticated role enrolls in TOTP on first sign-in
+  // (UNI-49); the actual `auth.sign_in` audit row is written when the
+  // session is finally created in routes/mfa.ts.
   //
-  // Trusted-device bypass (UNI-47): if the role is `university_admin`
-  // (and ONLY that role — `super_admin` is always-MFA), and the request
-  // carries a valid `device_trust` cookie that hashes to a non-expired
-  // row whose `ip_address` matches the current request IP, then the MFA
-  // challenge is skipped and a session is issued directly. Anything that
-  // doesn't satisfy all three conditions falls through to the regular
-  // TOTP flow.
+  //   - `super_admin` + `university_admin` are "always challenge" — every
+  //     sign-in runs through TOTP. The UNI-47 trusted-device cookie
+  //     bypass is the one exception, and only for `university_admin`
+  //     (matching today's behavior; rolling it back is out of scope and
+  //     would invalidate live cookies).
+  //   - Non-admin roles use the risk-based gate: skip MFA when the device
+  //     fingerprint matches a row whose `last_mfa_at` is fresh.
   if (roleRequiresMfa(user.role)) {
-    const bypass = await tryTrustedDeviceBypass(ctx, user, ip);
-    if (!bypass) {
+    let bypassed = false;
+    if (user.role === "university_admin") {
+      bypassed = await tryTrustedDeviceBypass(ctx, user, ip);
+    }
+    if (!bypassed && roleUsesRiskBasedMfa(user.role)) {
+      bypassed = await tryRevalidationWindowBypass(ctx, user, ip);
+    }
+    if (!bypassed) {
       const challenge = await issueMfaChallenge(ctx, user);
       const body: SignInResponse = {
         status: "mfa_required",
         mfa_enrolled: challenge.enrolled,
-        // UNI-47: only `university_admin` is eligible for the trusted-
-        // device bypass. `super_admin` is always-MFA — surfaced here so
-        // the SPA can hide the "Remember this device" checkbox for
-        // super_admin sign-ins.
-        trusted_device_eligible: user.role === "university_admin",
+        // `super_admin` always-MFA → no checkbox.
+        // `university_admin` keeps the UNI-47 cookie-bypass option.
+        // Every other role gets the UNI-49 risk-based grant on success.
+        trusted_device_eligible: !roleAlwaysChallenges(user.role)
+          ? true
+          : user.role === "university_admin",
       };
       return jsonOk(body, { headers: { "set-cookie": challenge.setCookie } });
     }

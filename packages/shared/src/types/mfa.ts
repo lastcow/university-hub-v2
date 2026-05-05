@@ -15,13 +15,20 @@ export type SignInResponse =
       status: "mfa_required";
       mfa_enrolled: boolean;
       /**
-       * UNI-47: surfaces whether the user is eligible for the
-       * "Remember this device" trusted-device bypass. True only for
-       * `university_admin`. `super_admin` is always-MFA and always
-       * false; non-MFA roles never see this response. The SPA uses
-       * this to decide whether to render the checkbox on the MFA
-       * challenge page. The user's role itself is not surfaced —
-       * just the eligibility flag.
+       * Surfaces whether the user is eligible for the "Trust this device"
+       * grant on a successful MFA challenge.
+       *
+       * UNI-47 (admin-only cookie bypass): a `university_admin` who ticks
+       * the checkbox gets a signed cookie + exact-IP gate.
+       *
+       * UNI-49 (risk-based, all non-admin roles): faculty / teacher /
+       * teacher_assistant / student / staff / guest / viewer are eligible
+       * to grant trust as well; the checkbox stores a server-side device
+       * fingerprint that lets future sign-ins skip the challenge inside
+       * `mfa_revalidation_days`.
+       *
+       * `super_admin` is always-MFA and always `false`. Non-MFA roles
+       * never see this response.
        */
       trusted_device_eligible: boolean;
     };
@@ -47,12 +54,27 @@ export interface MfaVerifyResponse {
 /**
  * Returned by `GET /api/auth/mfa/status`. The Settings → Security tab uses
  * this to show whether MFA is enabled and how many recovery codes remain.
+ *
+ * UNI-49 extends the shape with `last_mfa_at` (newest successful MFA across
+ * all devices) and `trusted_device_count` (active fingerprint rows). The
+ * endpoint returns 200 for any authenticated user — non-admin roles get
+ * the same shape as admins so the UI never lands in the "couldn't load"
+ * error state surfaced under UNI-48.
  */
 export interface MfaStatusResponse {
   required: boolean;
   enrolled: boolean;
   enabled_at: string | null;
   recovery_codes_remaining: number;
+  /** UNI-49: timestamp of the newest successful MFA across this user's
+   *  trusted-device rows. `null` if MFA was never completed. */
+  last_mfa_at: string | null;
+  /** UNI-49: number of active trusted-device rows (cookie-trust grants
+   *  AND fingerprint-only seen-device rows). */
+  trusted_device_count: number;
+  /** UNI-49: revalidation window currently in effect. Surfaced so the
+   *  UI can phrase "MFA on this device every N days" correctly. */
+  revalidation_days: number;
 }
 
 /** Returned by `POST /api/auth/mfa/recovery-codes` (regenerate). */
