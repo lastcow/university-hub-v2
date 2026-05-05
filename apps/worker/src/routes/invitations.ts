@@ -11,6 +11,24 @@
 // helper for UI affordances but the backend re-checks every call. University
 // scoping: super_admin sees / acts on everything; university_admin is scoped
 // to their own university (and may not invite super_admins).
+//
+// university_id propagation contract (UNI-62):
+//   - `invitations.university_id` is the source of truth for the invitee's
+//     university and is captured at create time. The create endpoint
+//     resolves it from (a) the request body, (b) the inviter's
+//     `university_id` for university_admin callers, and rejects with 400
+//     `university_required` if the resolved value is NULL for any role
+//     other than `super_admin`. super_admin invites are intentionally
+//     allowed to carry NULL because super_admin is global.
+//   - The accept endpoint copies that value onto the new user row in the
+//     same INSERT. As a backwards-compat safety net for invitations
+//     created before this contract was enforced, it also falls back to
+//     the inviter's current `university_id` and rejects acceptance with
+//     409 `university_unresolved` when the role requires a university
+//     and neither source produces one. This prevents the "orphaned
+//     user" failure mode described in UNI-62 (per-university features
+//     refusing to load with the "Your account is not associated with a
+//     university" error) from recurring.
 
 import {
   ROLE_LABELS,
@@ -198,6 +216,21 @@ export async function handleCreateInvitation(ctx: RequestContext): Promise<Respo
       403,
       "forbidden_role",
       `You cannot invite users with the role "${ROLE_LABELS[role]}".`,
+    );
+  }
+
+  // UNI-62: every non-super_admin invitation must carry a `university_id`
+  // — otherwise the user created on accept is orphaned and per-university
+  // features (LMS connections, RBAC scoping) refuse to load. super_admin
+  // is intentionally global, so NULL is allowed there. The most common
+  // way to hit this is super_admin (whose own `university_id` is NULL)
+  // creating a faculty / staff invitation without specifying a target
+  // university — pre-UNI-62 that silently produced an orphaned user.
+  if (role !== "super_admin" && targetUniversityId === null) {
+    return errorResponse(
+      400,
+      "university_required",
+      "An invitation for this role must specify a university.",
     );
   }
 
@@ -669,6 +702,23 @@ export async function handleAcceptInvitation(ctx: RequestContext): Promise<Respo
     );
   }
 
+  // UNI-62: resolve `university_id` for the new user. The invitation row
+  // is the preferred source — it captures the inviter's intent at create
+  // time and is stable across inviter role / role-change. If the row
+  // pre-dates UNI-62 (when the create endpoint started enforcing the
+  // contract) and was stored with a NULL `university_id`, fall back to
+  // the inviter's current `university_id`. For `super_admin` the result
+  // is allowed to be NULL; for every other role we refuse to create an
+  // orphaned account.
+  const targetUniversityId = await resolveAcceptUniversity(ctx.env.DB, row);
+  if (row.role !== "super_admin" && targetUniversityId === null) {
+    return errorResponse(
+      409,
+      "university_unresolved",
+      "This invitation cannot be accepted because no university could be resolved for this account. Please ask an administrator to issue a fresh invitation.",
+    );
+  }
+
   // Create the user, mark the invitation accepted. D1 batch isn't a true
   // transaction (per db/index.ts) but the worst case here is a created user
   // with a still-pending invitation, which the next accept would catch via
@@ -682,12 +732,12 @@ export async function handleAcceptInvitation(ctx: RequestContext): Promise<Respo
   // version 1 / the seeded boilerplate when no row exists yet.
   const termsVersion = await currentLegalVersion(
     ctx.env.DB,
-    row.university_id,
+    targetUniversityId,
     "terms",
   );
   const privacyVersion = await currentLegalVersion(
     ctx.env.DB,
-    row.university_id,
+    targetUniversityId,
     "privacy",
   );
 
@@ -703,7 +753,7 @@ export async function handleAcceptInvitation(ctx: RequestContext): Promise<Respo
       passwordHash,
       name,
       row.role,
-      row.university_id,
+      targetUniversityId,
       now,
       now,
       now,
@@ -719,7 +769,7 @@ export async function handleAcceptInvitation(ctx: RequestContext): Promise<Respo
   await writeAuditLog(ctx.env.DB, {
     action: "invitation.accepted",
     actorUserId: userId,
-    universityId: row.university_id,
+    universityId: targetUniversityId,
     entityType: "invitation",
     entityId: row.id,
     metadata: { email: row.email, role: row.role },
@@ -727,7 +777,7 @@ export async function handleAcceptInvitation(ctx: RequestContext): Promise<Respo
   await writeAuditLog(ctx.env.DB, {
     action: "user.created",
     actorUserId: userId,
-    universityId: row.university_id,
+    universityId: targetUniversityId,
     entityType: "user",
     entityId: userId,
     metadata: { source: "invitation_accept", role: row.role },
@@ -735,7 +785,7 @@ export async function handleAcceptInvitation(ctx: RequestContext): Promise<Respo
   await writeAuditLog(ctx.env.DB, {
     action: "legal.terms_accepted",
     actorUserId: userId,
-    universityId: row.university_id,
+    universityId: targetUniversityId,
     entityType: "user",
     entityId: userId,
     metadata: {
@@ -746,10 +796,10 @@ export async function handleAcceptInvitation(ctx: RequestContext): Promise<Respo
   });
 
   // Welcome email — failure is non-blocking (logged in `email_logs`).
-  const universityName = await fetchUniversityName(ctx.env.DB, row.university_id);
+  const universityName = await fetchUniversityName(ctx.env.DB, targetUniversityId);
   const welcomeResult = await sendWelcomeEmail(ctx.env, {
     to: row.email,
-    universityId: row.university_id,
+    universityId: targetUniversityId,
     variables: {
       recipient_name: name,
       university_name: universityName ?? "",
@@ -759,7 +809,7 @@ export async function handleAcceptInvitation(ctx: RequestContext): Promise<Respo
   await recordEmailAudit(ctx, welcomeResult, {
     action: welcomeResult.ok ? "email.sent" : "email.failed",
     actorId: userId,
-    universityId: row.university_id,
+    universityId: targetUniversityId,
     invitationId: row.id,
     emailType: "welcome",
   });
@@ -902,6 +952,32 @@ async function currentLegalVersion(
     [kind],
   );
   return global?.version ?? 1;
+}
+
+/**
+ * UNI-62: resolve the `university_id` to stamp on the new user row when an
+ * invitation is accepted. Priority order:
+ *   1. `invitations.university_id` (preferred — captured at create time).
+ *   2. The inviter's current `users.university_id` (fallback for rows that
+ *      pre-date the create-side validation; covers anyone whose
+ *      `invitations.university_id` was stored as NULL by the old code).
+ *
+ * Returns NULL when neither source resolves. The caller decides whether
+ * NULL is acceptable for the invited role (`super_admin` → yes;
+ * everything else → reject).
+ */
+async function resolveAcceptUniversity(
+  db: D1Database,
+  invitation: InvitationRow,
+): Promise<string | null> {
+  if (invitation.university_id) return invitation.university_id;
+  if (!invitation.invited_by) return null;
+  const inviter = await queryFirst<{ university_id: string | null }>(
+    db,
+    `SELECT university_id FROM users WHERE id = ? LIMIT 1`,
+    [invitation.invited_by],
+  );
+  return inviter?.university_id ?? null;
 }
 
 async function loadInvitationRow(

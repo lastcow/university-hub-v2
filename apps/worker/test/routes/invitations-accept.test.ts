@@ -41,6 +41,21 @@ interface AcceptScenario {
    * exercised after the refactor.
    */
   bodyOverrides?: Partial<AcceptInvitationInput>;
+  /**
+   * Override the seeded invitation row. Tests for the UNI-62 university_id
+   * propagation rules use this to set `university_id: null` (so the accept
+   * endpoint exercises the inviter-fallback path) without rewriting the
+   * shared fixture.
+   */
+  invitationOverrides?: Partial<Invitation>;
+  /**
+   * UNI-62: when set, the mock DB returns this row when the accept handler
+   * looks up the inviter via `invited_by`. Used to assert that an
+   * invitation row stored before the create-side enforcement landed (NULL
+   * `invitations.university_id`) still produces a non-orphan user as long
+   * as the inviter is still resolvable.
+   */
+  inviterRow?: { university_id: string | null } | null;
 }
 
 interface AcceptResult {
@@ -76,7 +91,10 @@ function setCookies(res: Response): string[] {
  *  read path for a freshly-issued, unaccepted invitation. The mutable
  *  `userInserted` slot lets the post-call assertions verify the user
  *  row was written with `mfa_enabled_at = NULL`. */
-function makeAcceptDb(invitation: InvitationFixture): {
+function makeAcceptDb(
+  invitation: InvitationFixture,
+  options?: { inviterRow?: { university_id: string | null } | null },
+): {
   db: ProgrammableD1;
   insertedUser: () => Record<string, unknown> | null;
 } {
@@ -130,6 +148,21 @@ function makeAcceptDb(invitation: InvitationFixture): {
       // No existing user — accept proceeds to insert.
       return null;
     }
+    // UNI-62 fallback: when `invitations.university_id` is NULL the
+    // handler reads the inviter's row to recover the university. This
+    // resolver returns `options.inviterRow` for that lookup; tests that
+    // care about the fallback path set it explicitly. The branch is
+    // keyed on `invited_by` so it doesn't collide with the
+    // post-INSERT `loadMfaUser` lookup below.
+    if (
+      sql.includes("FROM users") &&
+      sql.includes("WHERE id = ?") &&
+      params[0] === invitation.invited_by &&
+      options &&
+      "inviterRow" in options
+    ) {
+      return options.inviterRow ?? null;
+    }
     if (sql.includes("FROM legal_documents")) {
       // No customer override + no global default → handler falls back to v1.
       return null;
@@ -166,9 +199,13 @@ async function callAccept(scenario: AcceptScenario): Promise<AcceptResult> {
     accepted_at: null,
     created_at: "2026-05-01T00:00:00.000Z",
     token_hash: tokenHash,
+    ...scenario.invitationOverrides,
   };
 
-  const { db, insertedUser } = makeAcceptDb(invitation);
+  const dbOptions = scenario.inviterRow !== undefined
+    ? { inviterRow: scenario.inviterRow }
+    : undefined;
+  const { db, insertedUser } = makeAcceptDb(invitation, dbOptions);
   const env = { ...envFor(), DB: db as unknown as D1Database };
 
   const requestBody: AcceptInvitationInput = {
@@ -269,5 +306,87 @@ describe("POST /api/invitations/accept — UNI-60 MFA enrollment hand-off", () =
     const cookies = setCookies(res).join(" | ");
     expect(cookies).not.toContain("university_hub_mfa_challenge=");
     expect(cookies).not.toContain("university_hub_session=");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UNI-62 — university_id propagation. Ensures the invitation-accept flow
+// never produces an orphaned (university_id = NULL) account for a
+// non-super_admin role. The "two confirmed cases in two days" report on the
+// issue tracked back to invitation rows whose `university_id` was left NULL
+// by the create endpoint; the fixes here cover the accept-side guarantee
+// (preferred source) plus the inviter-fallback for legacy rows.
+// ---------------------------------------------------------------------------
+
+describe("POST /api/invitations/accept — UNI-62 university_id propagation", () => {
+  const INVITATION_UNI = "22222222-2222-2222-2222-222222222222";
+  const INVITER_UNI = "44444444-4444-4444-4444-444444444444";
+
+  it("stamps the new user with the invitation's university_id (faculty happy path)", async () => {
+    const { res, db } = await callAccept({ role: "faculty" });
+    expect(res.status).toBe(201);
+
+    const userInsert = db.inserts("users")[0];
+    expect(userInsert).toBeDefined();
+    // Column index 5 is `university_id` per the INSERT in invitations.ts.
+    expect(userInsert!.params[5]).toBe(INVITATION_UNI);
+
+    // Audit rows for the accept flow should also carry the resolved
+    // university_id rather than NULL — they're scoped per-customer.
+    const auditUniversityIds = db
+      .inserts("audit_logs")
+      .map((row) => row.params[1]);
+    expect(auditUniversityIds).toContain(INVITATION_UNI);
+    expect(auditUniversityIds).not.toContain(null);
+  });
+
+  it("leaves university_id NULL for a super_admin invitation (super_admin is global)", async () => {
+    const { res, db } = await callAccept({
+      role: "super_admin",
+      invitationOverrides: { university_id: null },
+      // Inviter is also a super_admin with NULL university_id; the
+      // fallback should not promote that NULL to anything else.
+      inviterRow: { university_id: null },
+    });
+    expect(res.status).toBe(201);
+
+    const userInsert = db.inserts("users")[0];
+    expect(userInsert).toBeDefined();
+    expect(userInsert!.params[5]).toBeNull();
+  });
+
+  it("falls back to the inviter's university_id when the invitation row's is NULL (legacy row)", async () => {
+    // Simulates an invitation written before the create-side validation
+    // landed: super_admin (whose own `university_id` was NULL at the
+    // time) issued the invite without specifying a university, but the
+    // inviter has since been associated with one. The accept endpoint
+    // should still produce a non-orphaned user by reading the inviter
+    // back at accept-time.
+    const { res, db } = await callAccept({
+      role: "faculty",
+      invitationOverrides: { university_id: null },
+      inviterRow: { university_id: INVITER_UNI },
+    });
+    expect(res.status).toBe(201);
+
+    const userInsert = db.inserts("users")[0];
+    expect(userInsert).toBeDefined();
+    expect(userInsert!.params[5]).toBe(INVITER_UNI);
+  });
+
+  it("rejects accept with 409 when neither the invitation nor the inviter resolves a university (non-super_admin)", async () => {
+    const { res, rawBody, db } = await callAccept({
+      role: "faculty",
+      invitationOverrides: { university_id: null },
+      inviterRow: { university_id: null },
+    });
+    expect(res.status).toBe(409);
+    const err = (rawBody as { error?: { code?: string } } | null)?.error;
+    expect(err?.code).toBe("university_unresolved");
+
+    // No user row may be inserted on the orphan-prevention rejection.
+    expect(db.inserts("users").length).toBe(0);
+    expect(db.inserts("sessions").length).toBe(0);
+    expect(db.inserts("mfa_challenges").length).toBe(0);
   });
 });
