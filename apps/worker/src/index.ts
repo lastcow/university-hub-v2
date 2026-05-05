@@ -264,25 +264,43 @@ export default {
       return buildPreflightResponse(env, request);
     }
 
-    const ctx = await buildContext(request, env, executionCtx);
+    // Every non-OPTIONS path returns through `withCors` below — including the
+    // 500 fallback. The browser only enforces CORS on the response, so a
+    // route handler that throws unexpectedly must not escape un-wrapped or
+    // the SPA console fills with the misleading "No Access-Control-Allow-
+    // Origin" error instead of the real 5xx that the user can act on.
+    let response: Response;
+    try {
+      const ctx = await buildContext(request, env, executionCtx);
 
-    // Generic API rate limit (UNI-25). Authenticated callers get a per-session
-    // bucket (~120 req/min); everyone else a per-IP bucket (~30 req/min).
-    // Skips /api/health. Per-route stricter limits (sign-in, MFA challenge,
-    // password reset, invitation resend) run inside the route handlers.
-    const generic = await applyGenericLimit(ctx);
-    if (generic && !generic.allowed) {
-      return withCors(
-        rateLimitedResponse(
+      // Generic API rate limit (UNI-25). Authenticated callers get a
+      // per-session bucket (~120 req/min); everyone else a per-IP bucket
+      // (~30 req/min). Skips /api/health. Per-route stricter limits
+      // (sign-in, MFA challenge, password reset, invitation resend) run
+      // inside the route handlers.
+      const generic = await applyGenericLimit(ctx);
+      if (generic && !generic.allowed) {
+        response = rateLimitedResponse(
           generic,
           "Too many requests. Slow down and try again shortly.",
-        ),
-        env,
-        request,
+        );
+      } else {
+        response = await routeApi(ctx, request, env, url);
+      }
+    } catch (err) {
+      const cause = err instanceof Error ? err : new Error(String(err));
+      console.error("api_unhandled_error", {
+        pathname: url.pathname,
+        method: request.method,
+        message: cause.message,
+        stack: cause.stack,
+      });
+      response = errorResponse(
+        500,
+        "internal_error",
+        "An unexpected error occurred while handling the request.",
       );
     }
-
-    const response = await routeApi(ctx, request, env, url);
     return withCors(response, env, request);
   },
 
