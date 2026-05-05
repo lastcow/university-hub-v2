@@ -18,6 +18,11 @@ out/
 .env.*
 !.env.example
 !.dev.vars.example
+# UNI-46: the SPA's default-tenant production env is committed on purpose
+# (codifies VITE_API_BASE_URL so `wrangler pages deploy` from a fresh
+# checkout can't ship a bundle that calls relative /api/... paths). Per-
+# tenant overrides go through shell env, not a sibling .env.production.
+!apps/web/.env.production
 
 # Logs
 *.log

@@ -6,7 +6,7 @@
   "scripts": {
     "typecheck": "tsc -b --pretty",
     "dev": "vite",
-    "build": "tsc -b --pretty && vite build",
+    "build": "tsc -b --pretty && vite build && node ../../scripts/check-web-bundle.mjs",
     "preview": "vite preview",
     "test": "vitest run"
   },
