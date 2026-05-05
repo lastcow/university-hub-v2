@@ -16,6 +16,14 @@
 // `runReconciliationForRun` function persists the engine's progress
 // callbacks into `summary_json.progress`, and writes the terminal row
 // (`success` / `partial` / `failed`) once the engine returns.
+//
+// `lms_sync_runs.term_id` carries the provider-native term id (e.g.
+// Canvas's `enrollment_term_id`) — the SPA's term picker emits it
+// straight, the reconciliation engine consumes it as the term cursor.
+// 0015's original schema modelled the column as a FK into the local
+// `terms` catalog; UNI-66 dropped that FK (migration 0023) because the
+// runtime never populated `terms` rows on sync, and every sync-run
+// INSERT was failing with SQLITE_CONSTRAINT_FOREIGNKEY.
 
 import {
   type CreateLmsSyncRunResponse,
