@@ -194,10 +194,39 @@ The canonical list lives in `scripts/license-check.mjs`. Today it is:
 | Family | Why blocked |
 |---|---|
 | GPL-2.0, GPL-3.0, AGPL-3.0 | Copyleft — would force University Hub source disclosure. |
-| LGPL-3.0 | Linking obligations are ambiguous in JS/TS bundlers. |
+| LGPL-3.0, LGPL-3.0-or-later | Linking obligations are ambiguous in JS/TS bundlers. Narrow exceptions for precompiled native binaries used in dev tooling are tracked under "Scoped exceptions" below. |
 | SSPL-1.0, BUSL-1.1 | Source-Available, not OSI-approved. |
 | Custom / proprietary | Unknown obligations. |
 | `UNKNOWN` | Compliance cannot be verified — same risk class as a hostile license. |
+
+### Scoped exceptions
+
+A package may be listed individually in the `SCOPED_EXCEPTIONS` map at the
+top of `scripts/license-check.mjs` even when its license is not on the
+global allowlist. Each entry pins both the package name and the exact
+reported license string, so an upstream license change re-triggers the
+gate and forces a re-justification.
+
+A scoped exception is **not** a quiet expansion of the global allowlist.
+Adding one requires engineering-lead approval and a row in this section
+documenting the rationale, the dependency path, and a reassessment date.
+The triage flow below is still the first thing to try; reach for an
+exception only when paths 1–3 are not feasible.
+
+#### Currently in effect
+
+| Package | License | Dependency path | Why exempted | Reassess by |
+|---|---|---|---|---|
+| `@img/sharp-libvips-linux-x64` | `LGPL-3.0-or-later` | `@university-hub/worker` → `wrangler` → `miniflare` → `sharp` (devDep) | Precompiled native binary that wraps libvips. Used only by the local Worker test runtime (miniflare's image emulation); never bundled into the Cloudflare Worker that ships to students. LGPL's dynamic-link obligations are satisfied by the upstream package shipping its own LICENSE/NOTICE alongside the binary — we don't statically link, modify, or redistribute libvips ourselves. | 2026-11-01 |
+| `@img/sharp-libvips-linuxmusl-x64` | `LGPL-3.0-or-later` | same as above (musl variant) | Same rationale. | 2026-11-01 |
+
+When the reassessment date arrives, re-confirm that (a) `sharp` is still
+a devDep-only transitive of `wrangler`/`miniflare` (i.e. nothing in
+`apps/worker/src/**` or `apps/web/src/**` has started importing it), and
+(b) the upstream license has not narrowed. If both still hold, push the
+date forward by another six months. If either has changed, remove the
+exception and pick a different resolution path (replace the dependency,
+or escalate to engineering-lead for a re-justified entry).
 
 ### Triage flow
 
@@ -211,6 +240,11 @@ The canonical list lives in `scripts/license-check.mjs`. Today it is:
    document the exception here.
 4. **If the dependency is essential and the license is genuinely
    incompatible**: don't bundle it. Find a fork or replacement.
+5. **If the dependency is a precompiled native binary pulled in
+   transitively by dev tooling, and replacing the parent toolchain is
+   out of scope**: a scoped exception per the previous subsection is the
+   last resort, with engineering-lead approval and a documented
+   reassessment date.
 
 ### Local verification
 
@@ -218,6 +252,9 @@ The canonical list lives in `scripts/license-check.mjs`. Today it is:
 npm ci
 npm run license:check
 ```
+
+The gate prints any accepted scoped exceptions on stdout in the success
+summary, so a passing run still surfaces what was waved through.
 
 ---
 
