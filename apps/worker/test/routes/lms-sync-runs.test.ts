@@ -596,6 +596,82 @@ describe("POST /api/lms/sync-runs/preview", () => {
     expect(syncRuns).toHaveLength(0);
     expect(db.inserts("lms_sync_runs")).toHaveLength(0);
   });
+
+  // UNI-67 follow-up: preview must count UNIQUE students across all
+  // courses (a student in 3 courses is one student, not three). The
+  // dedup is by external_user_id, which every enrollment carries even
+  // when the bulk listing redacted email/login_id (FERPA-strict
+  // tenants like FSU).
+  it("dedupes students_total by external_user_id across courses", async () => {
+    const conn = await seedActiveConnection(USER_A_ID, UNI_A, CONN_A_ID);
+    const { db } = makeDb({ connections: [conn] });
+    const { provider } = makeFakeProvider({
+      courses: [
+        {
+          external_id: "C1",
+          external_term_id: "T1",
+          name: "Course 1",
+          code: null,
+          description: null,
+        },
+        {
+          external_id: "C2",
+          external_term_id: "T1",
+          name: "Course 2",
+          code: null,
+          description: null,
+        },
+        {
+          external_id: "C3",
+          external_term_id: "T1",
+          name: "Course 3",
+          code: null,
+          description: null,
+        },
+      ],
+      enrollmentsByCourse: new Map([
+        // Student u1 appears in all three courses; student u2 in two; u3 in one.
+        // Per-row count would be 6; unique-student count must be 3.
+        [
+          "C1",
+          [
+            { external_id: "E11", external_course_id: "C1", external_user_id: "u1", email: null, name: "S1", role: "student" },
+            { external_id: "E12", external_course_id: "C1", external_user_id: "u2", email: null, name: "S2", role: "student" },
+            { external_id: "E13", external_course_id: "C1", external_user_id: "u3", email: null, name: "S3", role: "student" },
+          ],
+        ],
+        [
+          "C2",
+          [
+            { external_id: "E21", external_course_id: "C2", external_user_id: "u1", email: null, name: "S1", role: "student" },
+            { external_id: "E22", external_course_id: "C2", external_user_id: "u2", email: null, name: "S2", role: "student" },
+          ],
+        ],
+        [
+          "C3",
+          [
+            { external_id: "E31", external_course_id: "C3", external_user_id: "u1", email: null, name: "S1", role: "student" },
+          ],
+        ],
+      ]),
+    });
+    lmsProviderRegistry.register(provider);
+
+    const res = await handleLmsSyncRunPreview(
+      ctxWith(
+        db,
+        { id: USER_A_ID, role: "faculty", university_id: UNI_A },
+        { method: "POST", body: { connection_id: CONN_A_ID, term_id: "T1" } },
+      ),
+    );
+    expect(res.status).toBe(200);
+    const body = await jsonBody<{
+      data: { courses: number; students_total: number };
+    }>(res);
+    expect(body.data.courses).toBe(3);
+    // Three UNIQUE students even though there are six per-course rows.
+    expect(body.data.students_total).toBe(3);
+  });
 });
 
 // ---------------------------------------------------------------------------

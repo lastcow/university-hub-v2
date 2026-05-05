@@ -384,6 +384,161 @@ describe("listEnrollments", () => {
     await listEnrollments(BASE, TOKEN, weirdId, { fetchImpl: mock.fetchImpl });
     expect(mock.calls).toHaveLength(1);
   });
+
+  // UNI-67 follow-up: FERPA-strict tenants (e.g. Frostburg) redact
+  // user.email and user.login_id from the bulk enrollments listing.
+  // We recover login_id via per-user `/users/:id/profile` lookups
+  // (deduped, parallel) so the reconcile matcher and the preview's
+  // dedup-by-user-id both have something to work with.
+  describe("UNI-67 — profile-fetch fallback when bulk listing redacts email/login_id", () => {
+    it("fetches /users/:id/profile for each unique user with no email and no login_id, then merges login_id back in", async () => {
+      const mock = mockFetch([
+        {
+          url: (u) =>
+            u.startsWith(`${BASE}/api/v1/courses/33228/enrollments?`),
+          response: () =>
+            rawResponse(loadFixture("enrollments-redacted.json")),
+        },
+        {
+          url: `${BASE}/api/v1/users/45511/profile`,
+          response: () =>
+            jsonResponse({
+              id: 45511,
+              name: "Jason Adams",
+              login_id: "jradams02@frostburg.edu",
+              primary_email: null,
+              sis_user_id: "3149558S",
+            }),
+        },
+        {
+          url: `${BASE}/api/v1/users/41563/profile`,
+          response: () =>
+            jsonResponse({
+              id: 41563,
+              name: "Oluwatosin Akinlonu",
+              login_id: "odakinlonu0@frostburg.edu",
+              primary_email: null,
+            }),
+        },
+        {
+          url: `${BASE}/api/v1/users/22620/profile`,
+          response: () =>
+            jsonResponse({
+              id: 22620,
+              name: "Zhijiang Chen",
+              login_id: "zchen@frostburg.edu",
+              primary_email: "zchen@frostburg.edu",
+            }),
+        },
+      ]);
+      const result = await listEnrollments(BASE, TOKEN, "33228", {
+        fetchImpl: mock.fetchImpl,
+      });
+      // Three rows, all with email populated from the profile login_id.
+      expect(result.map((e) => `${e.role}:${e.external_user_id}:${e.email}`)).toEqual([
+        "student:45511:jradams02@frostburg.edu",
+        "student:41563:odakinlonu0@frostburg.edu",
+        "teacher:22620:zchen@frostburg.edu",
+      ]);
+      // Three profile fetches happened — one per unique user id.
+      const profileCalls = mock.calls.filter((c) =>
+        c.url.includes("/users/") && c.url.endsWith("/profile"),
+      );
+      expect(profileCalls).toHaveLength(3);
+    });
+
+    it("dedupes profile fetches when the same user shows up across rows", async () => {
+      // Synthetic case: the same user is somehow enrolled twice in the
+      // same course (rare but legal, e.g. as observer + student). The
+      // profile endpoint should be hit ONCE for that user id.
+      const dup = JSON.stringify([
+        {
+          id: 1,
+          user_id: 7777,
+          course_id: 9000,
+          type: "StudentEnrollment",
+          user: { id: 7777, name: "Pat Twice", email: null, login_id: null },
+        },
+        {
+          id: 2,
+          user_id: 7777,
+          course_id: 9000,
+          type: "TaEnrollment",
+          user: { id: 7777, name: "Pat Twice", email: null, login_id: null },
+        },
+      ]);
+      const mock = mockFetch([
+        {
+          url: (u) => u.startsWith(`${BASE}/api/v1/courses/9000/enrollments?`),
+          response: () => rawResponse(dup),
+        },
+        {
+          url: `${BASE}/api/v1/users/7777/profile`,
+          response: () =>
+            jsonResponse({ id: 7777, login_id: "pat@school.edu" }),
+        },
+      ]);
+      const result = await listEnrollments(BASE, TOKEN, "9000", {
+        fetchImpl: mock.fetchImpl,
+      });
+      expect(result).toHaveLength(2);
+      expect(result.every((e) => e.email === "pat@school.edu")).toBe(true);
+      const profileCalls = mock.calls.filter((c) => c.url.endsWith("/profile"));
+      expect(profileCalls).toHaveLength(1);
+    });
+
+    it("skips the profile fetch when the bulk listing already has email or login_id", async () => {
+      // The shipped enrollments fixture has email/login_id set for
+      // every row — the loop should make zero profile calls. This is
+      // the regression guard that keeps non-FERPA-strict tenants on
+      // the single-round-trip path.
+      const mock = mockFetch([
+        {
+          url: (u) =>
+            u.startsWith(`${BASE}/api/v1/courses/5001/enrollments?`),
+          response: () => rawResponse(loadFixture("enrollments.json")),
+        },
+      ]);
+      await listEnrollments(BASE, TOKEN, "5001", {
+        fetchImpl: mock.fetchImpl,
+      });
+      const profileCalls = mock.calls.filter((c) => c.url.endsWith("/profile"));
+      expect(profileCalls).toHaveLength(0);
+    });
+
+    it("tolerates a 404 on a single profile (deleted user) and returns the row with email=null", async () => {
+      // Canvas can 404 a profile lookup if the user has been deleted
+      // since the enrollment was emitted. The whole list must NOT
+      // fail — only that row's email stays null and reconcile records
+      // a per-row error.
+      const oneRow = JSON.stringify([
+        {
+          id: 1,
+          user_id: 9999,
+          course_id: 1000,
+          type: "StudentEnrollment",
+          user: { id: 9999, name: "Ghost", email: null, login_id: null },
+        },
+      ]);
+      const mock = mockFetch([
+        {
+          url: (u) => u.startsWith(`${BASE}/api/v1/courses/1000/enrollments?`),
+          response: () => rawResponse(oneRow),
+        },
+        {
+          url: `${BASE}/api/v1/users/9999/profile`,
+          response: () =>
+            jsonResponse({ errors: ["not found"] }, { status: 404 }),
+        },
+      ]);
+      const result = await listEnrollments(BASE, TOKEN, "1000", {
+        fetchImpl: mock.fetchImpl,
+      });
+      expect(result).toHaveLength(1);
+      expect(result[0]!.email).toBeNull();
+      expect(result[0]!.external_user_id).toBe("9999");
+    });
+  });
 });
 
 describe("listManageableAccounts", () => {

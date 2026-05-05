@@ -1,0 +1,46 @@
+[
+  {
+    "id": 593578,
+    "user_id": 45511,
+    "course_id": 33228,
+    "type": "StudentEnrollment",
+    "role": "StudentEnrollment",
+    "enrollment_state": "active",
+    "user": {
+      "id": 45511,
+      "name": "Jason Adams",
+      "email": null,
+      "login_id": null,
+      "sis_user_id": "3149558S"
+    }
+  },
+  {
+    "id": 610503,
+    "user_id": 41563,
+    "course_id": 33228,
+    "type": "StudentEnrollment",
+    "role": "StudentEnrollment",
+    "enrollment_state": "active",
+    "user": {
+      "id": 41563,
+      "name": "Oluwatosin Akinlonu",
+      "email": null,
+      "login_id": null,
+      "sis_user_id": "3146354S"
+    }
+  },
+  {
+    "id": 610600,
+    "user_id": 22620,
+    "course_id": 33228,
+    "type": "TeacherEnrollment",
+    "role": "TeacherEnrollment",
+    "enrollment_state": "active",
+    "user": {
+      "id": 22620,
+      "name": "Zhijiang Chen",
+      "email": null,
+      "login_id": null
+    }
+  }
+]
