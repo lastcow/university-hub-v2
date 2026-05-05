@@ -11,9 +11,16 @@ local_protocol = "http"
 # This Worker serves only `/api/*`. The SPA ships separately via Cloudflare
 # Pages (project: university-hub-v2-web) — see docs/deployment.md. CORS for
 # the cross-origin Pages → Worker fetches is driven by ALLOWED_WEB_ORIGINS.
+#
+# The wildcard entry covers Pages per-deploy preview URLs of the shape
+# `<sha>.university-hub-v2-web.pages.dev` that Cloudflare emits for each
+# deploy. The canonical alias is listed explicitly so a misconfigured
+# wildcard parser can't accidentally drop production. The CORS code
+# (apps/worker/src/utils/cors.ts) only matches one extra label so
+# `evil.attacker.university-hub-v2-web.pages.dev`-style spoofs still fail.
 [vars]
 APP_ENV = "production"
-ALLOWED_WEB_ORIGINS = "https://university-hub-v2-web.pages.dev"
+ALLOWED_WEB_ORIGINS = "https://university-hub-v2-web.pages.dev,https://*.university-hub-v2-web.pages.dev"
 
 # D1 database binding — `env.DB` in the Worker.
 # The actual D1 database is provisioned by QA on deploy (see UNI-16).
