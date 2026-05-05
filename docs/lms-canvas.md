@@ -50,9 +50,15 @@ The Phase 1 Canvas adapter only reads. It calls:
   (cheapest authenticated endpoint).
 - `GET /api/v1/accounts/:account_id/terms` — admin-scoped term list,
   with a `/courses?include[]=term` fallback for non-admin users.
-- `GET /api/v1/courses` (with `enrollment_state=active`,
-  `enrollment_role[]=TeacherEnrollment`, `enrollment_role[]=TaEnrollment`,
-  `include[]=term`)
+- `GET /api/v1/courses` — issued **twice**, once with
+  `enrollment_type=teacher` and once with `enrollment_type=ta`, both
+  with `enrollment_state=active`, `per_page=100`, and `include[]=term`.
+  Canvas's user-scoped courses endpoint accepts only the **scalar**
+  `enrollment_type` parameter; the array form (`enrollment_type[]` or
+  `enrollment_role[]`) is silently ignored and Canvas returns `[]` —
+  the symptom that produced UNI-67's 0/0 preview against the FSU
+  operator's PAT. The two scalar calls run in parallel and the adapter
+  dedupes by external course id.
 - `GET /api/v1/courses/:id/enrollments` (with `type[]=StudentEnrollment`,
   `type[]=TeacherEnrollment`, `type[]=TaEnrollment`, `include[]=user`,
   `include[]=email`)
