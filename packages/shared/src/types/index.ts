@@ -25,3 +25,4 @@ export * from "./parent.js";
 export * from "./legal.js";
 export * from "./escalation-contact.js";
 export * from "./trusted-device.js";
+export * from "./lms.js";
