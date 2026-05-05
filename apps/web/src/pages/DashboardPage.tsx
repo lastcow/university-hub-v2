@@ -157,6 +157,8 @@ export function DashboardPage() {
   }, [summary]);
 
   const isSuperAdmin = user?.role === "super_admin";
+  const showSystemHealth =
+    user?.role === "super_admin" || user?.role === "university_admin";
 
   function handleQuickAction() {
     toast({
@@ -438,35 +440,42 @@ export function DashboardPage() {
           <TabsTrigger value="invitations">Invitations</TabsTrigger>
         </TabsList>
         <TabsContent value="overview">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">System health</CardTitle>
-              <CardDescription>
-                Backend wire-up sanity check.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {summary.status === "loading" ? (
-                <Skeleton className="h-4 w-48" />
-              ) : summary.status === "error" ? (
-                <p className="text-sm text-destructive">
-                  Worker is unreachable — see the error card above.
-                </p>
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  Worker reports{" "}
-                  <span className="font-mono text-foreground">
-                    /api/dashboard/summary
-                  </span>{" "}
-                  generated at{" "}
-                  <time dateTime={summary.data?.generated_at}>
-                    {summary.data?.generated_at}
-                  </time>
-                  .
-                </p>
-              )}
-            </CardContent>
-          </Card>
+          {showSystemHealth ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">System health</CardTitle>
+                <CardDescription>
+                  Backend wire-up sanity check.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {summary.status === "loading" ? (
+                  <Skeleton className="h-4 w-48" />
+                ) : summary.status === "error" ? (
+                  <p className="text-sm text-destructive">
+                    Worker is unreachable — see the error card above.
+                  </p>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    Worker reports{" "}
+                    <span className="font-mono text-foreground">
+                      /api/dashboard/summary
+                    </span>{" "}
+                    generated at{" "}
+                    <time dateTime={summary.data?.generated_at}>
+                      {summary.data?.generated_at}
+                    </time>
+                    .
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          ) : (
+            <EmptyState
+              title="You're all set"
+              description="The numbers above reflect what you can see across the workspace."
+            />
+          )}
         </TabsContent>
         <TabsContent value="academic">
           <EmptyState

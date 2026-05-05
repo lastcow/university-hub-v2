@@ -126,8 +126,17 @@ function buildMailgunStatus(env: Env): MailgunStatusResponse {
 export function handleGetMailgunStatus(ctx: RequestContext): Response {
   const auth = requireAuth(ctx);
   if (auth instanceof Response) return auth;
-  // Any signed-in user may read the status (no values are returned). The
-  // Settings UI shows it under the same section the spec defines for §29.
+  // Mailgun configuration is an operations concern — only super_admin should
+  // see whether the keys are present, so the section doesn't leak from the
+  // Settings page to faculty / students. The endpoint never returns secret
+  // values, but visibility itself is admin-gated.
+  if (auth.user.role !== "super_admin") {
+    return errorResponse(
+      403,
+      "forbidden",
+      "Only super administrators can view Mailgun configuration.",
+    );
+  }
   return jsonOk(buildMailgunStatus(ctx.env));
 }
 

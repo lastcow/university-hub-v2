@@ -177,6 +177,16 @@ export async function handleListCourses(ctx: RequestContext): Promise<Response> 
     return jsonOk([]);
   }
 
+  // Faculty / teacher / teacher_assistant must only see courses they teach.
+  // Admins above already short-circuit; staff and other directory viewers see
+  // every course in their university.
+  if (isCourseScopedRole(actor.role)) {
+    where.push(
+      "c.id IN (SELECT course_id FROM course_assignments WHERE user_id = ? AND role = ?)",
+    );
+    params.push(actor.id, actor.role);
+  }
+
   const department = ctx.url.searchParams.get("department");
   if (department) {
     where.push("c.department_id = ?");

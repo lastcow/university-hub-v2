@@ -29,6 +29,7 @@ import {
 
 import type { UserRow } from "../auth/session.js";
 import { execute, queryAll, queryFirst, type Row } from "../db/index.js";
+import { isCourseScopedRole } from "../db/scoped.js";
 import { requireAuth, type RequestContext } from "../middleware/auth.js";
 import { writeAuditLog } from "../services/audit.js";
 import { errorResponse, jsonOk } from "../utils/responses.js";
@@ -117,6 +118,23 @@ export async function handleListStudents(ctx: RequestContext): Promise<Response>
     if (!actor.university_id) return jsonOk([]);
     where.push("s.university_id = ?");
     params.push(actor.university_id);
+  }
+
+  // Faculty / teacher / teacher_assistant only see students enrolled in
+  // courses they're assigned to. Admins/staff see the full directory.
+  if (isCourseScopedRole(actor.role)) {
+    where.push(
+      `s.user_id IN (
+         SELECT ca_student.user_id
+           FROM course_assignments ca_student
+           JOIN course_assignments ca_self
+             ON ca_self.course_id = ca_student.course_id
+          WHERE ca_self.user_id = ?
+            AND ca_self.role = ?
+            AND ca_student.role = 'student'
+       )`,
+    );
+    params.push(actor.id, actor.role);
   }
 
   const department = ctx.url.searchParams.get("department");

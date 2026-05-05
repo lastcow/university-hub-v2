@@ -47,7 +47,9 @@ const SYSTEM_DASHBOARD_ROLES: readonly Role[] = [
 
 const ADMIN_ONLY: readonly Role[] = ["super_admin", "university_admin"];
 
-// Roles that get the academic directory section (read-only listings).
+// Roles that see the Students / Teacher-Assistants directories. Faculty and
+// teachers need these to find people in courses they teach (the backend
+// scopes those lists to the actor's course assignments).
 const DIRECTORY_VIEWERS: readonly Role[] = [
   "super_admin",
   "university_admin",
@@ -55,6 +57,16 @@ const DIRECTORY_VIEWERS: readonly Role[] = [
   "faculty",
   "teacher",
   "teacher_assistant",
+];
+
+// The Faculty and Teachers directories are admin/ops surfaces — they list
+// peers by university, which faculty/teachers/TAs don't need (and shouldn't
+// be browsing as a directory of co-workers). Keep them visible only to the
+// roles that actually administer staffing.
+const PEER_DIRECTORY_VIEWERS: readonly Role[] = [
+  "super_admin",
+  "university_admin",
+  "staff",
 ];
 
 // Departments / courses are visible to anyone academic. Editing is gated
@@ -157,13 +169,13 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "Faculty",
         to: "/app/faculty",
         icon: UserSquare2,
-        roles: DIRECTORY_VIEWERS,
+        roles: PEER_DIRECTORY_VIEWERS,
       },
       {
         label: "Teachers",
         to: "/app/teachers",
         icon: UserSquare2,
-        roles: DIRECTORY_VIEWERS,
+        roles: PEER_DIRECTORY_VIEWERS,
       },
       {
         label: "Teacher assistants",

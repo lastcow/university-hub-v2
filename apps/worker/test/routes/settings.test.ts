@@ -133,7 +133,7 @@ describe("GET /api/settings/mailgun-status — never leaks secrets", () => {
   it("returns Missing configuration for placeholder vars and no values", async () => {
     const db = makeUniDb();
     const res = handleGetMailgunStatus(
-      ctxWith(PLACEHOLDER_ENV, db, { id: STUDENT_ID, role: "student" }),
+      ctxWith(PLACEHOLDER_ENV, db, { id: SUPER_ADMIN_ID, role: "super_admin" }),
     );
     expect(res.status).toBe(200);
     const body = await jsonBody<{
@@ -160,7 +160,7 @@ describe("GET /api/settings/mailgun-status — never leaks secrets", () => {
   it("returns Configured for real values and never echoes the api key", async () => {
     const db = makeUniDb();
     const res = handleGetMailgunStatus(
-      ctxWith(CONFIGURED_ENV, db, { id: STUDENT_ID, role: "student" }),
+      ctxWith(CONFIGURED_ENV, db, { id: SUPER_ADMIN_ID, role: "super_admin" }),
     );
     const body = await jsonBody<{
       data: {
@@ -196,6 +196,27 @@ describe("GET /api/settings/mailgun-status — never leaks secrets", () => {
       auth: null,
     });
     expect(res.status).toBe(401);
+  });
+
+  it("returns 403 for non-super_admin (university_admin, faculty, student, ...)", async () => {
+    const db = makeUniDb();
+    for (const role of [
+      "university_admin",
+      "staff",
+      "faculty",
+      "teacher",
+      "teacher_assistant",
+      "student",
+      "viewer",
+      "guest",
+    ] as const) {
+      const res = handleGetMailgunStatus(
+        ctxWith(CONFIGURED_ENV, db, { id: UNI_ADMIN_ID, role }),
+      );
+      expect(res.status).toBe(403);
+      const body = await jsonBody<{ error: { code: string } }>(res);
+      expect(body.error.code).toBe("forbidden");
+    }
   });
 });
 

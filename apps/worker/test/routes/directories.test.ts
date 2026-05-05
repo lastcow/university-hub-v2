@@ -384,13 +384,15 @@ describe("Directory list endpoints — university scoping", () => {
     }
   });
 
-  it("teacher (academic role) can see students in their own university", async () => {
+  // Teacher / faculty / TA see only students enrolled in courses they're
+  // assigned to (UNI-48). The mock here doesn't honour the subquery, but the
+  // course-assignment scoping is exercised in `faculty-scoping.test.ts`. We
+  // still verify the response is 200 (not 403) so directory access for these
+  // roles isn't accidentally regressed at the route layer.
+  it("teacher (academic role) is allowed to list (200, not 403)", async () => {
     const db = makeDb();
     const res = await handleListStudents(ctx(TEACHER_USER, db));
     expect(res.status).toBe(200);
-    const body = await jsonBody<{ data: Array<{ university_id: string }> }>(res);
-    expect(body.data.length).toBe(1);
-    expect(body.data[0]!.university_id).toBe(UNI_A);
   });
 });
 
