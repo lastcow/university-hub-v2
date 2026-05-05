@@ -35,7 +35,10 @@ import {
 import type { Env } from "../env.js";
 import { requireAuth, type RequestContext } from "../middleware/auth.js";
 import { writeAuditLog } from "../services/audit.js";
-import { getMfaTrustedDeviceDays } from "../services/system-settings.js";
+import {
+  getMfaRevalidationDays,
+  getMfaTrustedDeviceDays,
+} from "../services/system-settings.js";
 import { errorResponse, jsonOk } from "../utils/responses.js";
 import { truncateIp, truncateUserAgent } from "./sessions.js";
 
@@ -50,9 +53,17 @@ function rowToListItem(row: TrustedDeviceRow): TrustedDeviceListItem {
     id: row.id,
     ip_excerpt: truncateIp(row.ip_address),
     user_agent_excerpt: truncateUserAgent(row.user_agent),
+    label: row.label,
     created_at: row.created_at,
     expires_at: row.expires_at,
     last_used_at: row.last_used_at,
+    last_mfa_at: row.last_mfa_at,
+    last_seen_at: row.last_seen_at,
+    // Fingerprint-only rows (UNI-49) carry an empty string in token_hash
+    // because they were never minted with a cookie. The UI uses this to
+    // distinguish "this device was just remembered" rows from the older
+    // UNI-47 cookie-bypass rows.
+    fingerprint_only: row.token_hash === "",
   };
 }
 
@@ -67,9 +78,11 @@ export async function handleListTrustedDevices(
   if (auth instanceof Response) return auth;
   const rows = await listTrustedDevicesForUser(ctx.env.DB, auth.user.id);
   const trustWindowDays = await getMfaTrustedDeviceDays(ctx.env.DB);
+  const revalidationDays = await getMfaRevalidationDays(ctx.env.DB);
   const body: TrustedDeviceListResponse = {
     trusted_devices: rows.map(rowToListItem),
     trust_window_days: trustWindowDays,
+    revalidation_days: revalidationDays,
   };
   return jsonOk(body);
 }
@@ -147,9 +160,11 @@ export async function handleAdminListTrustedDevices(
   }
   const rows = await listTrustedDevicesForUser(ctx.env.DB, targetUserId);
   const trustWindowDays = await getMfaTrustedDeviceDays(ctx.env.DB);
+  const revalidationDays = await getMfaRevalidationDays(ctx.env.DB);
   const body: TrustedDeviceListResponse = {
     trusted_devices: rows.map(rowToListItem),
     trust_window_days: trustWindowDays,
+    revalidation_days: revalidationDays,
   };
   return jsonOk(body);
 }

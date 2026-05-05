@@ -1904,16 +1904,19 @@ function TrustedDevicesSection({ userRole }: { userRole: Role | null }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Only `university_admin` can ever earn a trusted-device row today, so
-  // showing this section to other roles would just dangle an empty list
-  // forever. Render nothing for ineligible roles to keep the page tidy.
-  if (userRole !== "university_admin" && userRole !== "super_admin") {
+  // UNI-49: every role can earn a fingerprint-only trusted-device row,
+  // so the section is shown to every authenticated user. (Previously
+  // gated to admin roles since only university_admin could mint a
+  // cookie-bypass row.)
+  if (!userRole) {
     return null;
   }
 
   const items =
     state.status === "ok" ? state.data.trusted_devices : ([] as TrustedDeviceListItem[]);
   const trustWindow = state.status === "ok" ? state.data.trust_window_days : null;
+  const revalidationDays =
+    state.status === "ok" ? state.data.revalidation_days : null;
 
   const handleRevoke = async (id: string) => {
     setRevoking(true);
@@ -1967,11 +1970,14 @@ function TrustedDevicesSection({ userRole }: { userRole: Role | null }) {
           <CardTitle>Trusted devices</CardTitle>
         </div>
         <CardDescription>
-          Devices you've asked the system to remember after signing in. The
-          MFA challenge is skipped on these devices when the cookie is
-          intact and the request comes from the same IP.
-          {trustWindow != null
-            ? ` New trusts last for ${trustWindow} day${trustWindow === 1 ? "" : "s"}.`
+          Devices you've asked the system to remember after signing in.
+          {userRole === "university_admin" && trustWindow != null
+            ? ` Cookie-trusted devices last ${trustWindow} day${trustWindow === 1 ? "" : "s"}.`
+            : null}
+          {userRole !== "super_admin" &&
+          userRole !== "university_admin" &&
+          revalidationDays != null
+            ? ` MFA on this device is required every ${revalidationDays} day${revalidationDays === 1 ? "" : "s"}.`
             : null}
         </CardDescription>
       </CardHeader>
@@ -1997,16 +2003,31 @@ function TrustedDevicesSection({ userRole }: { userRole: Role | null }) {
                   className="flex flex-col gap-2 rounded-md border border-border bg-muted/20 p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
                 >
                   <div className="space-y-1">
+                    <p className="text-sm font-medium">
+                      {item.label ?? "Unknown device"}
+                      {item.fingerprint_only ? (
+                        <span className="ml-2 rounded bg-muted px-1.5 py-0.5 align-middle text-[10px] font-medium uppercase text-muted-foreground">
+                          fingerprint
+                        </span>
+                      ) : null}
+                    </p>
                     <p className="font-mono text-xs text-muted-foreground">
-                      {item.user_agent_excerpt ?? "Unknown device"}
+                      {item.user_agent_excerpt ?? "Unknown UA"}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       IP {item.ip_excerpt ?? "unknown"} · trusted{" "}
-                      {new Date(item.created_at).toLocaleDateString()} · expires{" "}
-                      {new Date(item.expires_at).toLocaleDateString()}
-                      {item.last_used_at
-                        ? ` · last used ${new Date(item.last_used_at).toLocaleDateString()}`
-                        : " · never used"}
+                      {new Date(item.created_at).toLocaleDateString()}
+                      {item.fingerprint_only ? null : (
+                        <>
+                          {" · expires "}
+                          {new Date(item.expires_at).toLocaleDateString()}
+                        </>
+                      )}
+                      {item.last_mfa_at
+                        ? ` · last MFA ${new Date(item.last_mfa_at).toLocaleDateString()}`
+                        : item.last_used_at
+                          ? ` · last used ${new Date(item.last_used_at).toLocaleDateString()}`
+                          : " · never used"}
                     </p>
                   </div>
                   <Button
@@ -2052,6 +2073,7 @@ type SystemSettingsState =
 function SystemSettingsSection() {
   const [state, setState] = useState<SystemSettingsState>({ status: "idle" });
   const [days, setDays] = useState<string>("30");
+  const [revalDays, setRevalDays] = useState<string>("30");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -2063,6 +2085,7 @@ function SystemSettingsSection() {
         if (controller.signal.aborted) return;
         setState({ status: "ok", data });
         setDays(String(data.mfa_trusted_device_days));
+        setRevalDays(String(data.mfa_revalidation_days));
       })
       .catch((cause: unknown) => {
         if (controller.signal.aborted) return;
@@ -2085,13 +2108,20 @@ function SystemSettingsSection() {
       setError("Trust window must be between 1 and 90 days.");
       return;
     }
+    const reval = Number.parseInt(revalDays, 10);
+    if (!Number.isFinite(reval) || reval < 1 || reval > 365) {
+      setError("Revalidation window must be between 1 and 365 days.");
+      return;
+    }
     setSaving(true);
     try {
       const updated = await updateSystemSettings({
         mfa_trusted_device_days: value,
+        mfa_revalidation_days: reval,
       });
       setState({ status: "ok", data: updated });
       setDays(String(updated.mfa_trusted_device_days));
+      setRevalDays(String(updated.mfa_revalidation_days));
       toast({ title: "System settings saved" });
     } catch (cause) {
       setError(
@@ -2148,6 +2178,26 @@ function SystemSettingsSection() {
                 <code className="font-mono">university_admin</code>;{" "}
                 <code className="font-mono">super_admin</code> always
                 completes MFA.
+              </p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="mfa-revalidation-days">
+                Risk-based MFA revalidation (days)
+              </Label>
+              <Input
+                id="mfa-revalidation-days"
+                type="number"
+                min={1}
+                max={365}
+                value={revalDays}
+                onChange={(e) => setRevalDays(e.target.value)}
+                disabled={saving}
+                className="max-w-xs"
+              />
+              <p className="text-xs text-muted-foreground">
+                Between 1 and 365 days. Default 30. Non-admin roles
+                re-challenge MFA when their last successful TOTP on the
+                current device fingerprint is older than this window.
               </p>
             </div>
             {error ? (

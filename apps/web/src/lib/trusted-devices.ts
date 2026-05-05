@@ -52,6 +52,8 @@ export function getSystemSettings(
 
 export function updateSystemSettings(input: {
   mfa_trusted_device_days?: number;
+  /** UNI-49: rolling window for the risk-based MFA gate (1..365). */
+  mfa_revalidation_days?: number;
 }): Promise<SystemSettingsResponse> {
   return api.patch<SystemSettingsResponse>("/api/settings/system", input);
 }

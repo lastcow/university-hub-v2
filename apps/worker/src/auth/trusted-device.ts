@@ -35,7 +35,19 @@ export type TrustedDeviceRow = Row & {
   expires_at: string;
   created_at: string;
   last_used_at: string | null;
+  // Risk-based MFA columns added by UNI-49 (migration 0014). All optional
+  // because a row created before that migration ran (or a row that only
+  // serves as a UNI-47 cookie-trust row) leaves them NULL.
+  device_fingerprint_hash: string | null;
+  label: string | null;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  last_mfa_at: string | null;
 };
+
+const SELECT_TRUSTED_DEVICE_COLUMNS = `id, user_id, token_hash, ip_address, user_agent,
+            expires_at, created_at, last_used_at,
+            device_fingerprint_hash, label, first_seen_at, last_seen_at, last_mfa_at`;
 
 function bytesToBase64Url(bytes: Uint8Array): string {
   let bin = "";
@@ -93,6 +105,11 @@ export interface CreateTrustedDeviceInput {
   ipAddress: string;
   userAgent?: string | null;
   trustWindowDays: number;
+  /** UNI-49: server-side fingerprint hash. Captured at grant time so the
+   *  next sign-in's risk gate can find this row without the cookie. */
+  deviceFingerprintHash?: string | null;
+  /** UNI-49: human label like "Chrome on macOS" — surfaced in the UI. */
+  label?: string | null;
 }
 
 export interface CreatedTrustedDevice {
@@ -111,11 +128,16 @@ export async function createTrustedDevice(
   const now = new Date();
   const ttlMs = input.trustWindowDays * 24 * 60 * 60 * 1000;
   const expiresAt = new Date(now.getTime() + ttlMs);
+  const nowIso = now.toISOString();
   await execute(
     env.DB,
     `INSERT INTO trusted_devices
-       (id, user_id, token_hash, ip_address, user_agent, expires_at, created_at, last_used_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+       (id, user_id, token_hash, ip_address, user_agent, expires_at,
+        created_at, last_used_at,
+        device_fingerprint_hash, label, first_seen_at, last_seen_at, last_mfa_at)
+     VALUES (?, ?, ?, ?, ?, ?,
+             ?, NULL,
+             ?, ?, ?, ?, ?)`,
     [
       id,
       input.userId,
@@ -123,10 +145,139 @@ export async function createTrustedDevice(
       input.ipAddress,
       input.userAgent ?? null,
       expiresAt.toISOString(),
-      now.toISOString(),
+      nowIso,
+      input.deviceFingerprintHash ?? null,
+      input.label ?? null,
+      nowIso,
+      nowIso,
+      nowIso,
     ],
   );
   return { id, token, expiresAt };
+}
+
+/**
+ * UNI-49 risk-based MFA gate. Non-admin roles look up an existing
+ * fingerprint row before deciding whether to challenge:
+ *
+ *   - row missing                      → unseen device, challenge
+ *   - row.last_mfa_at < cutoff         → stale, challenge
+ *   - otherwise                        → bypass + bump last_seen_at
+ *
+ * Returns the *latest* row for that fingerprint (newest `last_mfa_at`
+ * first), so a user who toggles "trust this device" multiple times keeps
+ * one logical row in front of the gate.
+ */
+export async function findTrustedDeviceByFingerprint(
+  db: D1Database,
+  userId: string,
+  deviceFingerprintHash: string,
+): Promise<TrustedDeviceRow | null> {
+  return queryFirst<TrustedDeviceRow>(
+    db,
+    `SELECT ${SELECT_TRUSTED_DEVICE_COLUMNS}
+       FROM trusted_devices
+      WHERE user_id = ?
+        AND device_fingerprint_hash = ?
+      ORDER BY COALESCE(last_mfa_at, created_at) DESC
+      LIMIT 1`,
+    [userId, deviceFingerprintHash],
+  );
+}
+
+/**
+ * Insert a fingerprint-only "seen device" row OR refresh an existing row
+ * for the same (user, fingerprint). Called by the MFA challenge / verify-
+ * enroll handler on success so the next sign-in can skip MFA inside the
+ * revalidation window. Does NOT mint a cookie or a token — this row is
+ * pure server-side state.
+ *
+ * `expires_at` is set far in the future for fingerprint-only rows; the
+ * decisive value is `last_mfa_at`. The row is still revocable from the
+ * trusted-devices Settings page.
+ */
+export async function recordFingerprintMfaSuccess(
+  db: D1Database,
+  input: {
+    userId: string;
+    deviceFingerprintHash: string;
+    label: string | null;
+    ipAddress: string;
+    userAgent: string | null;
+  },
+): Promise<{ id: string; isNew: boolean }> {
+  const existing = await findTrustedDeviceByFingerprint(
+    db,
+    input.userId,
+    input.deviceFingerprintHash,
+  );
+  const nowIso = new Date().toISOString();
+  if (existing) {
+    await execute(
+      db,
+      `UPDATE trusted_devices
+          SET last_mfa_at = ?,
+              last_seen_at = ?,
+              ip_address = ?,
+              user_agent = COALESCE(?, user_agent),
+              label = COALESCE(?, label)
+        WHERE id = ?`,
+      [
+        nowIso,
+        nowIso,
+        input.ipAddress,
+        input.userAgent,
+        input.label,
+        existing.id,
+      ],
+    );
+    return { id: existing.id, isNew: false };
+  }
+  // Fingerprint-only row: no cookie was minted, so token_hash is the empty
+  // string. The cookie path explicitly skips empty-string lookups so this
+  // row can never be resolved via the UNI-47 cookie surface.
+  const id = crypto.randomUUID();
+  // Far-future expiry so the existing UNI-47 expiry filter doesn't drop
+  // the row before its natural revoke (Date.UTC year 9999 is the largest
+  // value SQLite's strftime path will accept for ISO comparison).
+  const farFuture = "9999-12-31T23:59:59.000Z";
+  await execute(
+    db,
+    `INSERT INTO trusted_devices
+       (id, user_id, token_hash, ip_address, user_agent, expires_at,
+        created_at, last_used_at,
+        device_fingerprint_hash, label, first_seen_at, last_seen_at, last_mfa_at)
+     VALUES (?, ?, ?, ?, ?, ?,
+             ?, NULL,
+             ?, ?, ?, ?, ?)`,
+    [
+      id,
+      input.userId,
+      "", // sentinel: this row has no cookie; not resolvable via cookie path
+      input.ipAddress,
+      input.userAgent,
+      farFuture,
+      nowIso,
+      input.deviceFingerprintHash,
+      input.label,
+      nowIso,
+      nowIso,
+      nowIso,
+    ],
+  );
+  return { id, isNew: true };
+}
+
+export async function touchTrustedDeviceSeen(
+  db: D1Database,
+  id: string,
+  now: Date = new Date(),
+): Promise<void> {
+  await execute(
+    db,
+    `UPDATE trusted_devices SET last_seen_at = ? WHERE id = ?`,
+    [now.toISOString(), id],
+  );
 }
 
 /**
@@ -143,12 +294,16 @@ export async function resolveTrustedDeviceByToken(
 ): Promise<TrustedDeviceRow | null> {
   if (!token) return null;
   const tokenHash = await hashTrustedDeviceToken(token, getSessionSecret(env));
+  // Defensively skip the empty-string sentinel used by fingerprint-only
+  // rows (UNI-49). A request whose cookie HMAC'd to the empty hash would
+  // otherwise match every fingerprint-only row at once.
+  if (!tokenHash) return null;
   const row = await queryFirst<TrustedDeviceRow>(
     env.DB,
-    `SELECT id, user_id, token_hash, ip_address, user_agent,
-            expires_at, created_at, last_used_at
+    `SELECT ${SELECT_TRUSTED_DEVICE_COLUMNS}
        FROM trusted_devices
       WHERE token_hash = ?
+        AND token_hash != ''
       LIMIT 1`,
     [tokenHash],
   );
@@ -197,14 +352,33 @@ export async function listTrustedDevicesForUser(
 ): Promise<TrustedDeviceRow[]> {
   return queryAll<TrustedDeviceRow>(
     db,
-    `SELECT id, user_id, token_hash, ip_address, user_agent,
-            expires_at, created_at, last_used_at
+    `SELECT ${SELECT_TRUSTED_DEVICE_COLUMNS}
        FROM trusted_devices
       WHERE user_id = ?
         AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now')
       ORDER BY created_at DESC`,
     [userId],
   );
+}
+
+/**
+ * Count of non-expired trusted-device rows for a user. Surfaced by
+ * `GET /api/auth/mfa/status` so the SPA can show "3 trusted devices"
+ * without a second round-trip.
+ */
+export async function countTrustedDevicesForUser(
+  db: D1Database,
+  userId: string,
+): Promise<number> {
+  const row = await queryFirst<Row & { c: number }>(
+    db,
+    `SELECT COUNT(*) AS c
+       FROM trusted_devices
+      WHERE user_id = ?
+        AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
+    [userId],
+  );
+  return row?.c ?? 0;
 }
 
 /**

@@ -37,7 +37,9 @@ import type { Env } from "../env.js";
 import { requireAuth, type RequestContext } from "../middleware/auth.js";
 import { writeAuditLog } from "../services/audit.js";
 import {
+  MFA_REVALIDATION_DAYS_KEY,
   MFA_TRUSTED_DEVICE_DAYS_KEY,
+  getMfaRevalidationDays,
   getMfaTrustedDeviceDays,
   setSystemSettingString,
 } from "../services/system-settings.js";
@@ -457,8 +459,10 @@ export async function handleGetSystemSettings(
     );
   }
   const days = await getMfaTrustedDeviceDays(ctx.env.DB);
+  const revalDays = await getMfaRevalidationDays(ctx.env.DB);
   const body: SystemSettingsResponse = {
     mfa_trusted_device_days: days,
+    mfa_revalidation_days: revalDays,
   };
   return jsonOk(body);
 }
@@ -522,6 +526,21 @@ export async function handleUpdateSystemSettings(
       };
     }
   }
+  if (parsed.data.mfa_revalidation_days !== undefined) {
+    const previous = await getMfaRevalidationDays(ctx.env.DB);
+    if (previous !== parsed.data.mfa_revalidation_days) {
+      await setSystemSettingString(
+        ctx.env.DB,
+        MFA_REVALIDATION_DAYS_KEY,
+        String(parsed.data.mfa_revalidation_days),
+        actor.id,
+      );
+      changed.mfa_revalidation_days = {
+        from: previous,
+        to: parsed.data.mfa_revalidation_days,
+      };
+    }
+  }
 
   if (Object.keys(changed).length > 0) {
     await writeAuditLog(ctx.env.DB, {
@@ -535,8 +554,10 @@ export async function handleUpdateSystemSettings(
   }
 
   const days = await getMfaTrustedDeviceDays(ctx.env.DB);
+  const revalDays = await getMfaRevalidationDays(ctx.env.DB);
   const body: SystemSettingsResponse = {
     mfa_trusted_device_days: days,
+    mfa_revalidation_days: revalDays,
   };
   return jsonOk(body);
 }
