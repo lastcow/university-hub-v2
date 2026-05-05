@@ -176,11 +176,15 @@ export const SCENARIOS: Scenario[] = [
       Promise.resolve(handleGetSystemStatus(makeCtx(actor, db, get("/api/settings/system-status")))),
     successActors: allActorKeys(),
   },
+  // GET /api/settings/mailgun-status — operations surface, super_admin only
+  // (UNI-48). Visibility itself is admin-gated even though the response
+  // never contains secret values.
   {
     id: "GET /api/settings/mailgun-status",
     invoke: async (actor, db) =>
       Promise.resolve(handleGetMailgunStatus(makeCtx(actor, db, get("/api/settings/mailgun-status")))),
-    successActors: allActorKeys(),
+    successActors: ["superAdmin"],
+    strictForbidden: true,
   },
   // PATCH /api/settings/account is "edit your own account" — every signed-in
   // actor is allowed to edit their own row, the route does no scoping.

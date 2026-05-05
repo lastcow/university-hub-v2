@@ -15,6 +15,7 @@ import {
 
 import type { UserRow } from "../auth/session.js";
 import { queryAll, queryFirst, type Row } from "../db/index.js";
+import { isCourseScopedRole } from "../db/scoped.js";
 import { requireAuth, type RequestContext } from "../middleware/auth.js";
 import { errorResponse, jsonOk } from "../utils/responses.js";
 
@@ -158,6 +159,23 @@ export async function handleListTeacherAssistants(
     if (!actor.university_id) return jsonOk([]);
     where.push("ta.university_id = ?");
     params.push(actor.university_id);
+  }
+
+  // Faculty / teacher / teacher_assistant only see TAs assigned to courses
+  // they themselves teach. Admins/staff see the full directory.
+  if (isCourseScopedRole(actor.role)) {
+    where.push(
+      `ta.user_id IN (
+         SELECT ca_ta.user_id
+           FROM course_assignments ca_ta
+           JOIN course_assignments ca_self
+             ON ca_self.course_id = ca_ta.course_id
+          WHERE ca_self.user_id = ?
+            AND ca_self.role = ?
+            AND ca_ta.role = 'teacher_assistant'
+       )`,
+    );
+    params.push(actor.id, actor.role);
   }
 
   const department = ctx.url.searchParams.get("department");

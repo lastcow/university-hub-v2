@@ -122,14 +122,21 @@ export function SettingsPage() {
 
   const canEditUniversity =
     user?.role === "super_admin" || user?.role === "university_admin";
+  const canSeeMailgun = user?.role === "super_admin";
 
   const [mailgun, setMailgun] = useState<MailgunState>({ status: "idle" });
   const [uni, setUni] = useState<UniState>({ status: "idle" });
 
   // -------------------------------------------------------------------------
-  // Mailgun status
+  // Mailgun status — super_admin only. The endpoint returns 403 for everyone
+  // else; mirroring that gate on the client keeps the section out of the UI
+  // entirely instead of flashing a permission error toast.
   // -------------------------------------------------------------------------
   useEffect(() => {
+    if (!canSeeMailgun) {
+      setMailgun({ status: "idle" });
+      return;
+    }
     const controller = new AbortController();
     setMailgun({ status: "loading" });
     getMailgunStatus(controller.signal)
@@ -148,7 +155,7 @@ export function SettingsPage() {
         });
       });
     return () => controller.abort();
-  }, []);
+  }, [canSeeMailgun]);
 
   // -------------------------------------------------------------------------
   // University (only when the user belongs to one)
@@ -215,7 +222,7 @@ export function SettingsPage() {
 
       {user?.role === "super_admin" ? <EscalationContactsSection /> : null}
 
-      <MailgunSection state={mailgun} />
+      {canSeeMailgun ? <MailgunSection state={mailgun} /> : null}
     </div>
   );
 }
