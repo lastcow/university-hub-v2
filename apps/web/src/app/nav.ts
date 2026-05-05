@@ -16,6 +16,7 @@ import {
   GraduationCap,
   LayoutDashboard,
   LifeBuoy,
+  Link2,
   Mail,
   Send,
   Settings,
@@ -252,6 +253,17 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         to: "/app/email-logs",
         icon: Mail,
         roles: ADMIN_ONLY,
+      },
+      {
+        // LMS integrations (UNI-54). Any authenticated user role can land
+        // on the page — admins see the full list of providers their
+        // university has enabled; other roles see whatever providers they
+        // already have a connection for. Access control on the underlying
+        // endpoints is enforced server-side.
+        label: "Integrations",
+        to: "/app/integrations",
+        icon: Link2,
+        roles: ROLES,
       },
       {
         // Account settings are always available to the signed-in user; the

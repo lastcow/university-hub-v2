@@ -80,9 +80,16 @@ import {
 } from "./routes/escalation-contacts.js";
 import {
   handleDeleteLmsProviderConfig,
+  handleListEnabledLmsProviders,
   handleListLmsProviderConfigs,
   handleUpsertLmsProviderConfig,
 } from "./routes/lms-provider-configs.js";
+import {
+  handleCanvasOAuthCallback,
+  handleDisconnectLmsConnection,
+  handleListLmsConnections,
+  handleStartCanvasConnection,
+} from "./routes/lms-connections.js";
 import {
   handleCreateCourse,
   handleCreateCourseAssignment,
@@ -213,6 +220,8 @@ const LEGAL_ADMIN_KIND_RE = /^\/api\/legal\/admin\/(terms|privacy)\/?$/;
 const ESCALATION_CONTACT_RE = /^\/api\/escalation-contacts\/([a-z_]+)\/?$/;
 const LMS_PROVIDER_CONFIG_ID_RE =
   /^\/api\/lms\/provider-configs\/([0-9a-fA-F-]{36})\/?$/;
+const LMS_CONNECTION_DISCONNECT_RE =
+  /^\/api\/lms\/connections\/([0-9a-fA-F-]{36})\/disconnect\/?$/;
 
 export default {
   async fetch(request, env): Promise<Response> {
@@ -521,6 +530,18 @@ async function routeApi(
     // for each LMS integration. RBAC + tenant scoping live in the
     // handlers; the /:id DELETE form is matched via a UUID regex so
     // the static-path collection routes don't get swallowed.
+    //
+    // The `/enabled` sub-path is the user-facing public listing (UNI-54)
+    // — any authenticated user can read it, scoped to their own
+    // university and filtered to enabled rows. It must match BEFORE the
+    // bare `/api/lms/provider-configs` GET so admin-only handler doesn't
+    // 403 non-admin users on this side endpoint.
+    if (
+      url.pathname === "/api/lms/provider-configs/enabled" &&
+      request.method === "GET"
+    ) {
+      return handleListEnabledLmsProviders(ctx);
+    }
     if (
       url.pathname === "/api/lms/provider-configs" &&
       request.method === "GET"
@@ -540,6 +561,37 @@ async function routeApi(
       return handleDeleteLmsProviderConfig(
         ctx,
         lmsProviderConfigMatch[1] as string,
+      );
+    }
+
+    // LMS user connections (UNI-54). Static collection paths and the
+    // Canvas-specific OAuth dance match before the per-id `/disconnect`
+    // regex so the static segments don't get parsed as UUIDs.
+    if (
+      url.pathname === "/api/lms/connections" &&
+      request.method === "GET"
+    ) {
+      return handleListLmsConnections(ctx);
+    }
+    if (
+      url.pathname === "/api/lms/connections/canvas/start" &&
+      request.method === "POST"
+    ) {
+      return handleStartCanvasConnection(ctx);
+    }
+    if (
+      url.pathname === "/api/lms/connections/canvas/callback" &&
+      request.method === "GET"
+    ) {
+      return handleCanvasOAuthCallback(ctx);
+    }
+    const lmsConnectionDisconnectMatch = LMS_CONNECTION_DISCONNECT_RE.exec(
+      url.pathname,
+    );
+    if (lmsConnectionDisconnectMatch && request.method === "POST") {
+      return handleDisconnectLmsConnection(
+        ctx,
+        lmsConnectionDisconnectMatch[1] as string,
       );
     }
 

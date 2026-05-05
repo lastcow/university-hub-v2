@@ -58,10 +58,10 @@ Canvas root-account admin:
    - **Owner Email**: your dev contact
    - **Redirect URIs**: comma-separated list of every redirect URI you
      plan to use for this key. For local development:
-     `http://localhost:8787/api/lms/canvas/callback` (the Worker dev
+     `http://localhost:8787/api/lms/connections/canvas/callback` (the Worker dev
      port). For deployed environments, the production callback URL
      served by the Worker, e.g.
-     `https://<your-worker>.workers.dev/api/lms/canvas/callback`.
+     `https://<your-worker>.workers.dev/api/lms/connections/canvas/callback`.
    - **Icon URL**, **Vendor Code**, **Notes**: optional.
    - **Scopes**: leave **Enforce Scopes** OFF for sandbox testing
      (Canvas grants the developer-key default), or turn it ON and
@@ -128,7 +128,7 @@ the dev Worker running, and a Hub user with `university_admin` role.
    `teacher` / `teacher_assistant` user and visit
    `/app/integrations` (UNI-54). Click **Connect Canvas**. The browser
    is redirected to Canvas's authorize page, where the user approves
-   the scopes and is redirected back to `/api/lms/canvas/callback` with
+   the scopes and is redirected back to `/api/lms/connections/canvas/callback` with
    a `code` and `state` param.
 3. **Verify the connection row.** The Worker's callback handler
    exchanges the `code` for tokens via
@@ -155,7 +155,7 @@ serves it. Wrangler's `wrangler dev --local --port 8787` puts the
 Worker at `http://localhost:8787`, so the callback is:
 
 ```
-http://localhost:8787/api/lms/canvas/callback
+http://localhost:8787/api/lms/connections/canvas/callback
 ```
 
 Canvas allows multiple redirect URIs per developer key, so register
