@@ -32,15 +32,33 @@ export interface AuthState {
   session: SessionRow;
 }
 
+/** Subset of `ExecutionContext` we expose to handlers. Only `waitUntil`
+ *  is used today (UNI-55 sync runner schedules background work after
+ *  responding); we keep the type narrow so tests can supply a minimal
+ *  fake without claiming the rest of the platform surface. */
+export interface ExecutionCtxLike {
+  waitUntil(promise: Promise<unknown>): void;
+}
+
 export interface RequestContext {
   request: Request;
   env: Env;
   url: URL;
   cookies: Record<string, string>;
   auth: AuthState | null;
+  /** Cloudflare's `ExecutionContext` (or a test fake), threaded so
+   *  handlers can `executionCtx.waitUntil(...)` background work that
+   *  outlives the response. Optional because not every callsite
+   *  (notably some tests) supplies one; handlers that need it must
+   *  fall back gracefully. */
+  executionCtx?: ExecutionCtxLike;
 }
 
-export async function buildContext(request: Request, env: Env): Promise<RequestContext> {
+export async function buildContext(
+  request: Request,
+  env: Env,
+  executionCtx?: ExecutionCtxLike,
+): Promise<RequestContext> {
   const url = new URL(request.url);
   const cookies = parseCookies(request.headers.get("cookie"));
   const cookieName = env.SESSION_COOKIE_NAME || "university_hub_session";
@@ -75,7 +93,7 @@ export async function buildContext(request: Request, env: Env): Promise<RequestC
       }
     }
   }
-  return { request, env, url, cookies, auth };
+  return { request, env, url, cookies, auth, executionCtx };
 }
 
 export type SessionTimeoutReason = "idle_timeout" | "absolute_timeout";

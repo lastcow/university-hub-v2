@@ -67,3 +67,19 @@ export const startLmsConnectionInputSchema = z.object({
 export type StartLmsConnectionInput = z.infer<
   typeof startLmsConnectionInputSchema
 >;
+
+// `POST /api/lms/sync-runs/preview` and `POST /api/lms/sync-runs`
+// (UNI-55). Both bodies are the same: pick a connection + term. The
+// connection's tenant scoping (caller must own it) and the provider
+// resolution happen in the route handler — schema-level we just want
+// well-formed UUID + non-empty term.
+export const lmsSyncRunInputSchema = z.object({
+  connection_id: z.string().uuid("connection_id must be a UUID"),
+  term_id: z
+    .string()
+    .trim()
+    .min(1, "term_id is required")
+    .max(255, "term_id is too long"),
+});
+
+export type LmsSyncRunInputSchema = z.infer<typeof lmsSyncRunInputSchema>;
