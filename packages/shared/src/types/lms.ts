@@ -243,3 +243,52 @@ export const LMS_PROVIDER_DISPLAY_NAMES: Record<LmsProviderId, string> = {
   moodle: "Moodle",
   google_classroom: "Google Classroom",
 };
+
+/**
+ * Public shape of an `lms_connections` row as returned by
+ * `GET /api/lms/connections` (UNI-54). Tokens never leave the Worker —
+ * not the access_token, not the refresh_token, not the encrypted blobs.
+ * The shape carries enough metadata for the integrations UI to render
+ * connection status and last-sync time without exposing the bearer
+ * material to the SPA.
+ */
+export interface LmsConnectionPublic {
+  id: Id;
+  user_id: Id;
+  university_id: Id;
+  provider_id: LmsProviderId;
+  auth_method: LmsAuthMethod;
+  base_url: string;
+  status: LmsConnectionStatus;
+  scope: string | null;
+  /** Absolute ISO-8601 timestamp; null for PAT connections and for
+   *  OAuth providers that don't surface an expiry on the token response. */
+  token_expires_at: IsoDateString | null;
+  last_synced_at: IsoDateString | null;
+  created_at: IsoDateString;
+  updated_at: IsoDateString;
+}
+
+export interface LmsConnectionsResponse {
+  connections: LmsConnectionPublic[];
+}
+
+/** Successful response of `POST /api/lms/connections/canvas/start`. */
+export interface StartLmsConnectionResponse {
+  /** Provider-side authorize URL the SPA should redirect the browser
+   *  to (`window.location.href = authorize_url`). */
+  authorize_url: string;
+  /** Echo of the CSRF state token we minted; not strictly needed by
+   *  the SPA but useful in dev tooling and browser-based tests. */
+  state: string;
+  /** Provider id this state is bound to (always 'canvas' on this
+   *  endpoint today; here for future-proofing when Phase 3 lands the
+   *  other providers). */
+  provider_id: LmsProviderId;
+}
+
+/** Successful response of `POST /api/lms/connections/:id/disconnect`. */
+export interface DisconnectLmsConnectionResponse {
+  ok: true;
+  connection: LmsConnectionPublic;
+}

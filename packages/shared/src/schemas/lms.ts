@@ -55,3 +55,15 @@ export const updateLmsProviderConfigInputSchema = z.object({
 export type UpdateLmsProviderConfigInput = z.infer<
   typeof updateLmsProviderConfigInputSchema
 >;
+
+// `POST /api/lms/connections/canvas/start` body. `purpose` is the
+// optional free-text label Canvas surfaces on its consent screen — we
+// allow the SPA to override it but cap the length so a malicious caller
+// can't stuff a multi-kilobyte string into the authorize URL.
+export const startLmsConnectionInputSchema = z.object({
+  purpose: z.string().trim().max(120).optional(),
+});
+
+export type StartLmsConnectionInput = z.infer<
+  typeof startLmsConnectionInputSchema
+>;

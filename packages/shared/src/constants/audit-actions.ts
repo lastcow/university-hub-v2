@@ -54,6 +54,8 @@ export const AUDIT_ACTIONS = [
   "escalation.contact_updated",
   "lms.provider_config.updated",
   "lms.provider_config.removed",
+  "lms.connected",
+  "lms.disconnected",
 ] as const;
 
 export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
@@ -110,6 +112,8 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "escalation.contact_updated": "Escalation contact updated",
   "lms.provider_config.updated": "LMS provider configured",
   "lms.provider_config.removed": "LMS provider removed",
+  "lms.connected": "LMS account connected",
+  "lms.disconnected": "LMS account disconnected",
 };
 
 /**
