@@ -118,7 +118,20 @@ async function parseSuccess<T>(response: Response): Promise<T> {
 
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
-    return undefined as T;
+    // A 2xx response with a non-JSON body almost always means the request
+    // never reached the Worker — the most common cause is a Pages deploy
+    // built without `VITE_API_BASE_URL`, which makes the SPA call relative
+    // `/api/...` paths and Pages serves the SPA fallback (HTML) for them.
+    // Surface this as a loud error rather than silently returning
+    // `undefined`; callers (e.g. AuthContext) would otherwise mark the
+    // user as authenticated with no user object and render a blank page.
+    throw new ApiClientError({
+      code: "non_json_response",
+      message:
+        "Unexpected non-JSON response from the API. The web app may be " +
+        "pointing at the wrong origin (check VITE_API_BASE_URL).",
+      status: response.status,
+    });
   }
 
   const payload = (await response.json()) as { data?: T } | T;
