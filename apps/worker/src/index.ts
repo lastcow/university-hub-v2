@@ -80,6 +80,7 @@ import {
 } from "./routes/escalation-contacts.js";
 import {
   handleDeleteLmsProviderConfig,
+  handleListEnabledLmsProviders,
   handleListLmsProviderConfigs,
   handleUpsertLmsProviderConfig,
 } from "./routes/lms-provider-configs.js";
@@ -529,6 +530,18 @@ async function routeApi(
     // for each LMS integration. RBAC + tenant scoping live in the
     // handlers; the /:id DELETE form is matched via a UUID regex so
     // the static-path collection routes don't get swallowed.
+    //
+    // The `/enabled` sub-path is the user-facing public listing (UNI-54)
+    // — any authenticated user can read it, scoped to their own
+    // university and filtered to enabled rows. It must match BEFORE the
+    // bare `/api/lms/provider-configs` GET so admin-only handler doesn't
+    // 403 non-admin users on this side endpoint.
+    if (
+      url.pathname === "/api/lms/provider-configs/enabled" &&
+      request.method === "GET"
+    ) {
+      return handleListEnabledLmsProviders(ctx);
+    }
     if (
       url.pathname === "/api/lms/provider-configs" &&
       request.method === "GET"

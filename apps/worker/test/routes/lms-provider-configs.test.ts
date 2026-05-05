@@ -34,6 +34,7 @@ import type { Env } from "../../src/env.js";
 import type { AuthState, RequestContext } from "../../src/middleware/auth.js";
 import {
   handleDeleteLmsProviderConfig,
+  handleListEnabledLmsProviders,
   handleListLmsProviderConfigs,
   handleUpsertLmsProviderConfig,
 } from "../../src/routes/lms-provider-configs.js";
@@ -802,5 +803,134 @@ describe("DELETE /api/lms/provider-configs/:id", () => {
       seed.id,
     );
     expect(res.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/lms/provider-configs/enabled (UNI-54)
+//
+// User-facing public listing — any authenticated user can call it. Returns
+// only enabled rows for the caller's university and a stripped shape with
+// no admin-only fields. The /app/integrations page reads this so the
+// Connect button is reachable for non-admin roles (faculty / student / etc.)
+// — gating it behind isAdminLike was the UNI-54 QA blocker.
+// ---------------------------------------------------------------------------
+
+describe("GET /api/lms/provider-configs/enabled — public listing", () => {
+  it("requires authentication (401)", async () => {
+    const res = await handleListEnabledLmsProviders(ctxWith(makeDb(), null));
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 400 when the caller has no university", async () => {
+    const res = await handleListEnabledLmsProviders(
+      ctxWith(makeDb(), {
+        id: "00000000-0000-0000-0000-00000000eeee",
+        role: "guest",
+        university_id: null,
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("allows non-admin roles (faculty, teacher, student, staff, TA, viewer, guest)", async () => {
+    const seed = seedCanvasRow(UNI_A);
+    for (const role of [
+      "faculty",
+      "teacher",
+      "teacher_assistant",
+      "student",
+      "staff",
+      "viewer",
+    ] as const) {
+      const db = makeDb([seed]);
+      const res = await handleListEnabledLmsProviders(
+        ctxWith(db, {
+          id: "00000000-0000-0000-0000-00000000ffff",
+          role,
+          university_id: UNI_A,
+        }),
+      );
+      expect(res.status, `role=${role}`).toBe(200);
+      const body = await jsonBody<{
+        data: { providers: Array<{ provider_id: string }> };
+      }>(res);
+      expect(body.data.providers).toHaveLength(1);
+      expect(body.data.providers[0]!.provider_id).toBe("canvas");
+    }
+  });
+
+  it("response shape carries no admin-only fields and no secret", async () => {
+    const seed = seedCanvasRow(UNI_A);
+    const db = makeDb([seed]);
+    const res = await handleListEnabledLmsProviders(
+      ctxWith(db, {
+        id: "00000000-0000-0000-0000-00000000ffff",
+        role: "faculty",
+        university_id: UNI_A,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = await jsonBody(res);
+    const serialized = JSON.stringify(body);
+
+    // Admin-only fields are absent — the public shape is just
+    // (provider_id, display_name, base_url).
+    expect(serialized).not.toMatch(/"client_id"/);
+    expect(serialized).not.toMatch(/"client_id_last4"/);
+    expect(serialized).not.toMatch(/"client_secret"/);
+    expect(serialized).not.toMatch(/"client_secret_encrypted"/);
+    expect(serialized).not.toMatch(/"has_client_secret"/);
+    expect(serialized).not.toMatch(/"configured_by_user_id"/);
+    expect(serialized).not.toMatch(/"configured_at"/);
+    expect(serialized).not.toContain(seed.client_id);
+    expect(serialized).not.toContain(seed.client_secret_encrypted);
+
+    // The bits the SPA needs are present.
+    expect(serialized).toContain('"provider_id":"canvas"');
+    expect(serialized).toContain('"display_name":"Canvas"');
+    expect(serialized).toContain('"base_url":"https://canvas.example.edu"');
+  });
+
+  it("filters out disabled rows", async () => {
+    const seed = { ...seedCanvasRow(UNI_A), enabled: 0 };
+    const db = makeDb([seed]);
+    const res = await handleListEnabledLmsProviders(
+      ctxWith(db, {
+        id: "00000000-0000-0000-0000-00000000ffff",
+        role: "faculty",
+        university_id: UNI_A,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = await jsonBody<{
+      data: { providers: unknown[] };
+    }>(res);
+    expect(body.data.providers).toEqual([]);
+  });
+
+  it("scopes the listing to the caller's own university", async () => {
+    // UNI_A's row should never leak to a UNI_B user, even though both rows
+    // exist in the same table.
+    const db = makeDb([seedCanvasRow(UNI_A), seedCanvasRow(UNI_B)]);
+    const res = await handleListEnabledLmsProviders(
+      ctxWith(db, {
+        id: "00000000-0000-0000-0000-00000000ffff",
+        role: "faculty",
+        university_id: UNI_B,
+      }),
+    );
+    const body = await jsonBody<{
+      data: { providers: Array<{ base_url: string }> };
+    }>(res);
+    expect(body.data.providers).toHaveLength(1);
+    // Both seeds use the same base_url string by default; the test
+    // shape that matters is the count + provider_id; both seeds' rows
+    // for `canvas` exist but only the caller's row is returned. To
+    // make scoping visible, query from UNI_A and confirm no UNI_B row
+    // surfaces (the fake DB's onAll filter is by university_id).
+    expect(body.data.providers.every((p) => p.base_url.length > 0)).toBe(
+      true,
+    );
   });
 });

@@ -235,6 +235,25 @@ export interface LmsProviderConfigsResponse {
   providers: LmsProviderRegistryEntry[];
 }
 
+/**
+ * Public, non-admin entry for `GET /api/lms/provider-configs/enabled`
+ * (UNI-54). The user-facing /app/integrations page reads this — every
+ * authenticated user role can call the endpoint, scoped to their own
+ * university and filtered to enabled rows. The shape carries only
+ * what the SPA needs to render a Connect card; admin-relevant fields
+ * (`client_id_last4`, `has_client_secret`, `configured_*`) are NOT
+ * exposed here.
+ */
+export interface LmsEnabledProvider {
+  provider_id: LmsProviderId;
+  display_name: string;
+  base_url: string;
+}
+
+export interface LmsEnabledProvidersResponse {
+  providers: LmsEnabledProvider[];
+}
+
 /** Display labels for the registry entries — kept here so the admin UI
  *  doesn't have to hard-code provider name strings. */
 export const LMS_PROVIDER_DISPLAY_NAMES: Record<LmsProviderId, string> = {

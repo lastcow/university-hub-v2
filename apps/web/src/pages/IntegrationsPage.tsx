@@ -27,8 +27,8 @@ import {
 
 import type {
   LmsConnectionPublic,
+  LmsEnabledProvider,
   LmsProviderId,
-  LmsProviderRegistryEntry,
 } from "@university-hub/shared";
 
 import { useAuth } from "@/auth/AuthContext";
@@ -58,12 +58,12 @@ import {
   listLmsConnections,
   startCanvasConnection,
 } from "@/lib/lms-connections";
-import { listLmsProviderConfigs } from "@/lib/lms-provider-configs";
+import { listEnabledLmsProviders } from "@/lib/lms-provider-configs";
 
 interface IntegrationsState {
   status: "loading" | "ok" | "error";
   error?: string;
-  providers: LmsProviderRegistryEntry[];
+  providers: LmsEnabledProvider[];
   connections: LmsConnectionPublic[];
 }
 
@@ -84,7 +84,7 @@ export function IntegrationsPage() {
   );
   const [consentOpen, setConsentOpen] = useState(false);
   const [consentTarget, setConsentTarget] =
-    useState<LmsProviderRegistryEntry | null>(null);
+    useState<LmsEnabledProvider | null>(null);
   const [consentAcknowledged, setConsentAcknowledged] = useState(false);
 
   const consentStorageKey = useMemo(
@@ -95,8 +95,13 @@ export function IntegrationsPage() {
   async function reload() {
     setState((prev) => ({ ...prev, status: "loading" }));
     try {
+      // Both endpoints are reachable for any authenticated user. The
+      // enabled-providers listing is the public, non-admin view of the
+      // admin-managed `lms_provider_configs` table — it returns only
+      // enabled rows for the caller's university, with no admin-only
+      // fields (`client_id_last4`, `has_client_secret`, etc.).
       const [providersRes, connectionsRes] = await Promise.all([
-        listLmsProviderConfigs(),
+        listEnabledLmsProviders(),
         listLmsConnections(),
       ]);
       setState({
@@ -105,31 +110,6 @@ export function IntegrationsPage() {
         connections: connectionsRes.connections,
       });
     } catch (cause) {
-      // The provider-configs listing requires an admin role; non-admin
-      // users get a 403 there. That's fine — surface the connections
-      // alone in that case.
-      if (cause instanceof ApiClientError && cause.status === 403) {
-        try {
-          const connectionsRes = await listLmsConnections();
-          setState({
-            status: "ok",
-            providers: [],
-            connections: connectionsRes.connections,
-          });
-          return;
-        } catch (innerCause) {
-          setState({
-            status: "error",
-            providers: [],
-            connections: [],
-            error:
-              innerCause instanceof ApiClientError
-                ? innerCause.message
-                : "Could not load your LMS connections.",
-          });
-          return;
-        }
-      }
       setState({
         status: "error",
         providers: [],
@@ -198,13 +178,13 @@ export function IntegrationsPage() {
     }
   }
 
-  function openConsent(entry: LmsProviderRegistryEntry) {
+  function openConsent(entry: LmsEnabledProvider) {
     setConsentTarget(entry);
     setConsentAcknowledged(false);
     setConsentOpen(true);
   }
 
-  async function performConnect(entry: LmsProviderRegistryEntry) {
+  async function performConnect(entry: LmsEnabledProvider) {
     setPendingProvider(entry.provider_id);
     try {
       const res = await startCanvasConnection({
@@ -224,7 +204,7 @@ export function IntegrationsPage() {
     }
   }
 
-  function onConnectClick(entry: LmsProviderRegistryEntry) {
+  function onConnectClick(entry: LmsEnabledProvider) {
     if (isConsentAcknowledged()) {
       void performConnect(entry);
       return;
@@ -333,23 +313,20 @@ export function IntegrationsPage() {
 }
 
 interface VisibleProvider {
-  entry: LmsProviderRegistryEntry;
+  entry: LmsEnabledProvider;
   connection: LmsConnectionPublic | null;
 }
 
 function composeProviderList(
-  providers: LmsProviderRegistryEntry[],
+  providers: LmsEnabledProvider[],
   connections: LmsConnectionPublic[],
 ): VisibleProvider[] {
-  const enabled = providers.filter(
-    (p) => p.config !== null && p.config.enabled,
-  );
-  const byProvider = new Map(enabled.map((p) => [p.provider_id, p]));
+  const byProvider = new Map(providers.map((p) => [p.provider_id, p]));
   // Add any provider the user has an active or expired connection for
   // even if the admin disabled it — they should still be able to
   // disconnect cleanly. Revoked connections without an enabled
   // provider are hidden (no useful action remains).
-  const out: VisibleProvider[] = enabled.map((entry) => ({
+  const out: VisibleProvider[] = providers.map((entry) => ({
     entry,
     connection:
       connections.find(
@@ -363,7 +340,7 @@ function composeProviderList(
       entry: {
         provider_id: conn.provider_id,
         display_name: humanizeProviderId(conn.provider_id),
-        config: null,
+        base_url: conn.base_url,
       },
       connection: conn,
     });
@@ -409,7 +386,7 @@ function ProviderConnectCard({
   onConnect,
   onDisconnect,
 }: {
-  entry: LmsProviderRegistryEntry;
+  entry: LmsEnabledProvider;
   connection: LmsConnectionPublic | null;
   busy: boolean;
   onConnect: () => void;
@@ -426,10 +403,7 @@ function ProviderConnectCard({
           </div>
         </div>
         <CardDescription>
-          {connection
-            ? connection.base_url
-            : entry.config?.base_url ??
-              "Connect your account to import your courses and enrolled students."}
+          {connection ? connection.base_url : entry.base_url}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -471,7 +445,7 @@ function ProviderConnectCard({
               type="button"
               size="sm"
               onClick={onConnect}
-              disabled={busy || entry.config === null || !entry.config.enabled}
+              disabled={busy}
             >
               {busy ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -534,7 +508,7 @@ function ConsentModal({
   onCancel,
 }: {
   open: boolean;
-  target: LmsProviderRegistryEntry | null;
+  target: LmsEnabledProvider | null;
   acknowledged: boolean;
   onAcknowledgedChange: (next: boolean) => void;
   onConfirm: () => void;

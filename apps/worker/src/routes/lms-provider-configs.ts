@@ -28,6 +28,8 @@
 // appears in the audit row.
 
 import {
+  type LmsEnabledProvider,
+  type LmsEnabledProvidersResponse,
   type LmsProviderConfigPublic,
   type LmsProviderConfigsResponse,
   type LmsProviderId,
@@ -258,6 +260,49 @@ export async function handleListLmsProviderConfigs(
   }
 
   const body: LmsProviderConfigsResponse = { providers };
+  return jsonOk(body);
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/lms/provider-configs/enabled
+// ---------------------------------------------------------------------------
+
+/**
+ * Public, non-admin listing for the user-facing /app/integrations page
+ * (UNI-54). Any authenticated user can call it; the response is scoped
+ * to their own university and filtered to enabled rows only. The shape
+ * is `LmsEnabledProvider[]` — provider_id, display_name, base_url —
+ * with no admin-relevant fields (`client_id_last4`, `has_client_secret`,
+ * `configured_by_user_id`, etc.).
+ *
+ * Why a separate endpoint rather than a query param on the admin
+ * listing: the admin listing's response shape is a strict superset of
+ * what the SPA needs and an explicit second endpoint keeps the type
+ * contract obvious — non-admin callers literally cannot ask for
+ * admin-only fields.
+ */
+export async function handleListEnabledLmsProviders(
+  ctx: RequestContext,
+): Promise<Response> {
+  const auth = requireAuth(ctx);
+  if (auth instanceof Response) return auth;
+  const actor = auth.user;
+  if (!actor.university_id) {
+    return errorResponse(
+      400,
+      "invalid_request",
+      "Your account is not associated with a university; LMS connections are scoped per-university.",
+    );
+  }
+  const rows = await loadConfigsForUniversity(ctx.env.DB, actor.university_id);
+  const providers: LmsEnabledProvider[] = rows
+    .filter((r) => r.enabled === 1)
+    .map((r) => ({
+      provider_id: r.provider_id,
+      display_name: LMS_PROVIDER_DISPLAY_NAMES[r.provider_id],
+      base_url: r.base_url,
+    }));
+  const body: LmsEnabledProvidersResponse = { providers };
   return jsonOk(body);
 }
 
