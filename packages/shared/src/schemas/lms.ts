@@ -60,8 +60,14 @@ export type UpdateLmsProviderConfigInput = z.infer<
 // optional free-text label Canvas surfaces on its consent screen — we
 // allow the SPA to override it but cap the length so a malicious caller
 // can't stuff a multi-kilobyte string into the authorize URL.
+//
+// `origin` (UNI-57) records whether the dance was kicked off from the
+// post-MFA onboarding step or the standing /app/integrations page; the
+// callback uses it to choose where to redirect on success. Default
+// preserves the pre-UNI-57 behavior (integrations page).
 export const startLmsConnectionInputSchema = z.object({
   purpose: z.string().trim().max(120).optional(),
+  origin: z.enum(["onboarding", "integrations"]).optional(),
 });
 
 export type StartLmsConnectionInput = z.infer<

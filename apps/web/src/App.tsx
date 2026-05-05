@@ -30,6 +30,7 @@ import { GuestDashboardPage } from "@/pages/GuestDashboardPage";
 import { IntegrationsPage } from "@/pages/IntegrationsPage";
 import { InvitationsPage } from "@/pages/InvitationsPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
+import { OnboardingLmsPage } from "@/pages/OnboardingLmsPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { SignInPage } from "@/pages/SignInPage";
 import { StudentDashboardPage } from "@/pages/StudentDashboardPage";
@@ -150,6 +151,7 @@ export default function App() {
             <Route path="disclosures" element={<DisclosuresPage />} />
             <Route path="email-logs" element={<EmailLogsPage />} />
             <Route path="integrations" element={<IntegrationsPage />} />
+            <Route path="onboarding/lms" element={<OnboardingLmsPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="ux" element={<UxStatesPage />} />
             <Route path="access-denied" element={<AccessDeniedPage />} />

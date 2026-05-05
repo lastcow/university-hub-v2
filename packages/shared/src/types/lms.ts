@@ -449,3 +449,53 @@ export interface LmsSyncRunResponse {
 export interface LmsSyncRunsResponse {
   sync_runs: LmsSyncRunPublic[];
 }
+
+// ---------------------------------------------------------------------------
+// Onboarding hook (UNI-57).
+//
+// `GET /api/onboarding/lms-step` evaluates four gates server-side:
+//
+//   1. Caller's role is in { faculty, teacher, teacher_assistant }.
+//   2. At least one provider is configured + enabled at their university.
+//   3. Caller hasn't yet connected (no active `lms_connections` row).
+//   4. Caller hasn't dismissed the step (`users.lms_onboarding_dismissed_at`
+//      IS NULL).
+//
+// All four must pass for `show: true`. Otherwise `show: false` plus a
+// `reason` discriminator the SPA can use to log decisions in dev tools
+// (the SPA never branches on it user-facing — `show: false` always means
+// "skip the step and go to the dashboard").
+// ---------------------------------------------------------------------------
+
+export type LmsOnboardingSkipReason =
+  /** Role outside the teaching set. */
+  | "ineligible_role"
+  /** University has no enabled provider configured. */
+  | "no_provider_enabled"
+  /** Caller already connected; the integrations page handles re-sync. */
+  | "already_connected"
+  /** Caller previously skipped or connected, then re-signed in. */
+  | "dismissed"
+  /** Caller's `university_id` is null (e.g. super_admin without a home
+   *  tenant). Treated like `ineligible_role`; surfaced as a separate
+   *  reason so the dev-tools log makes the cause obvious. */
+  | "no_university";
+
+export interface LmsOnboardingStepResponse {
+  show: boolean;
+  /** Present whenever `show === false` so the SPA's debug logging can
+   *  distinguish the four skip causes. Never present when `show === true`. */
+  reason?: LmsOnboardingSkipReason;
+  /** Enabled providers at the caller's university — empty array when the
+   *  step is hidden. Same shape as the listing returned by
+   *  `GET /api/lms/provider-configs/enabled` so the SPA can reuse the
+   *  existing `LmsEnabledProvider` rendering primitives. */
+  providers: LmsEnabledProvider[];
+}
+
+export interface DismissLmsOnboardingResponse {
+  ok: true;
+  /** Echo of the timestamp the row was stamped with, in case the caller
+   *  wants to surface a "skipped at" message. Always non-null. */
+  dismissed_at: IsoDateString;
+}
