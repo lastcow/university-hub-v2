@@ -96,7 +96,11 @@ describe("LmsProviderRegistry", () => {
     expect(registry.require("moodle")).toBe(moodle);
   });
 
-  it("the process-wide registry is empty in this build (UNI-51 substrate only)", () => {
-    expect(lmsProviderRegistry.ids()).toEqual([]);
+  it("the process-wide registry has Canvas registered after the canvas module is imported (UNI-52)", async () => {
+    // Side-effect import populates the singleton. The substrate test
+    // (UNI-51) asserted the registry was empty; UNI-52 wires Canvas.
+    await import("../../src/lms/canvas/index.js");
+    expect(lmsProviderRegistry.ids()).toContain("canvas");
+    expect(lmsProviderRegistry.require("canvas").id).toBe("canvas");
   });
 });

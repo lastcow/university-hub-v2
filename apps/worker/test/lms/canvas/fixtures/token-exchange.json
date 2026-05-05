@@ -1,0 +1,11 @@
+{
+  "access_token": "atk-canvas-1.fixture.value-do-not-use",
+  "refresh_token": "rtk-canvas-1.fixture.value-do-not-use",
+  "token_type": "Bearer",
+  "user": {
+    "id": 7100,
+    "name": "Prof. Carol Carter"
+  },
+  "expires_in": 3600,
+  "scope": "url:GET|/api/v1/courses url:GET|/api/v1/courses/:id/enrollments"
+}

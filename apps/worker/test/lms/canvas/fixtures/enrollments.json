@@ -1,0 +1,67 @@
+[
+  {
+    "id": 90001,
+    "user_id": 7001,
+    "course_id": 5001,
+    "type": "StudentEnrollment",
+    "role": "StudentEnrollment",
+    "user": {
+      "id": 7001,
+      "name": "Alice Anderson",
+      "email": "alice@students.example.edu",
+      "login_id": "alice"
+    }
+  },
+  {
+    "id": 90002,
+    "user_id": 7002,
+    "course_id": 5001,
+    "type": "StudentEnrollment",
+    "role": "StudentEnrollment",
+    "user": {
+      "id": 7002,
+      "name": "Bob Brown",
+      "email": null,
+      "login_id": "bob@students.example.edu"
+    }
+  },
+  {
+    "id": 90003,
+    "user_id": 7100,
+    "course_id": 5001,
+    "type": "TeacherEnrollment",
+    "role": "TeacherEnrollment",
+    "user": {
+      "id": 7100,
+      "name": "Prof. Carol Carter",
+      "email": "carol@example.edu",
+      "login_id": "carol"
+    }
+  },
+  {
+    "id": 90004,
+    "user_id": 7150,
+    "course_id": 5001,
+    "type": "TaEnrollment",
+    "role": "TaEnrollment",
+    "user": {
+      "id": 7150,
+      "name": "Dan Diaz",
+      "email": "dan@example.edu",
+      "login_id": "dan"
+    }
+  },
+  {
+    "id": 90005,
+    "user_id": 7200,
+    "course_id": 5001,
+    "type": "ObserverEnrollment",
+    "role": "ObserverEnrollment",
+    "user": {
+      "id": 7200,
+      "name": "Eve External",
+      "email": "eve@parents.example.edu",
+      "login_id": "eve"
+    }
+  }
+]
