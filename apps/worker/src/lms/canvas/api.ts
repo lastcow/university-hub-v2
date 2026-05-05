@@ -318,6 +318,12 @@ function mapCourse(raw: CanvasCourse): LmsCourse | null {
  * The Canvas response includes `term` only when `include[]=term` is set;
  * we always request it so the term-derivation fallback in
  * `deriveTermsFromCourses` has data to work with.
+ *
+ * Note: this is the *user-scoped* path. Canvas only returns courses the
+ * acting user is enrolled in. For an account admin (no Teacher / TA
+ * enrollment of their own) this returns 0 — `provider.listMyCourses`
+ * tries `listAccountCoursesForTerm` first and only falls back here on
+ * 401/403 (UNI-64).
  */
 export async function listMyCourses(
   baseUrl: string,
@@ -346,6 +352,48 @@ export async function listMyCourses(
     },
   );
   return all.filter((c) => c.external_term_id === termId);
+}
+
+/**
+ * GET `/api/v1/accounts/{accountId}/courses?enrollment_term_id=...`.
+ * The *account-scoped* course list — returns every course in the
+ * account for the given term, regardless of whether the calling user
+ * is enrolled in them. Requires admin scope on the token; the caller
+ * (`provider.listMyCourses`) treats 401/403 as "no admin scope" and
+ * falls back to the user-scoped path.
+ *
+ * `state[]` is set explicitly to include unpublished and completed
+ * courses too — without it Canvas would silently drop courses still
+ * in draft, which is the same symptom as the bug we're fixing
+ * (UNI-64 root cause #4).
+ *
+ * `include[]=term` mirrors `listMyCourses` so the embedded term info
+ * is available to downstream callers if they ever need it.
+ */
+export async function listAccountCoursesForTerm(
+  baseUrl: string,
+  accessToken: string,
+  termId: string,
+  options: CanvasGetOptions & { accountId?: string } = {},
+): Promise<LmsCourse[]> {
+  const fetchImpl =
+    options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const accountId = options.accountId ?? "self";
+  const params = new URLSearchParams();
+  params.set("enrollment_term_id", termId);
+  params.set("per_page", "100");
+  params.append("state[]", "created");
+  params.append("state[]", "claimed");
+  params.append("state[]", "available");
+  params.append("state[]", "completed");
+  params.append("include[]", "term");
+  const url = `${trimBaseUrl(baseUrl)}/api/v1/accounts/${encodeURIComponent(accountId)}/courses?${params.toString()}`;
+  return getAllPages<LmsCourse>(url, accessToken, fetchImpl, (body) => {
+    const list = Array.isArray(body) ? (body as CanvasCourse[]) : [];
+    return list
+      .map(mapCourse)
+      .filter((c): c is LmsCourse => c !== null);
+  });
 }
 
 /** Build an `LmsTerm[]` by deduping the embedded term info on the

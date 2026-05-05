@@ -35,6 +35,7 @@ import { lmsProviderRegistry } from "../registry.js";
 
 import {
   deriveTermsFromCourses,
+  listAccountCoursesForTerm as canvasListAccountCoursesForTerm,
   listEnrollments as canvasListEnrollments,
   listMyCourses as canvasListMyCourses,
   listTerms as canvasListTerms,
@@ -115,16 +116,38 @@ export class CanvasProvider implements LmsProvider {
     }
   }
 
-  listMyCourses(
+  async listMyCourses(
     connection: LmsConnection,
     termId: string,
   ): Promise<LmsCourse[]> {
-    return canvasListMyCourses(
-      connection.base_url,
-      connection.access_token,
-      termId,
-      { fetchImpl: this.deps.fetchImpl },
-    );
+    // Prefer the account-scoped endpoint so account admins (who have
+    // no Teacher / TA enrollment of their own) still get the full
+    // course list for the term. Regular instructors lack admin scope
+    // on `/accounts/:id/courses`, which Canvas surfaces as 401/403 —
+    // we fall back to the user-scoped path for them, matching the
+    // pre-UNI-64 behavior. Mirrors the same fallback shape as
+    // `listTerms`.
+    try {
+      return await canvasListAccountCoursesForTerm(
+        connection.base_url,
+        connection.access_token,
+        termId,
+        { fetchImpl: this.deps.fetchImpl },
+      );
+    } catch (err) {
+      if (
+        err instanceof CanvasApiError &&
+        (err.status === 401 || err.status === 403)
+      ) {
+        return canvasListMyCourses(
+          connection.base_url,
+          connection.access_token,
+          termId,
+          { fetchImpl: this.deps.fetchImpl },
+        );
+      }
+      throw err;
+    }
   }
 
   listEnrollments(

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   deriveTermsFromCourses,
+  listAccountCoursesForTerm,
   listEnrollments,
   listMyCourses,
   listTerms,
@@ -192,6 +193,79 @@ describe("listMyCourses", () => {
       fetchImpl: mock.fetchImpl,
     });
     expect(result).toEqual([]);
+  });
+});
+
+describe("listAccountCoursesForTerm", () => {
+  it("hits the account-scoped endpoint with the numeric term id", async () => {
+    const url =
+      `${BASE}/api/v1/accounts/self/courses?enrollment_term_id=101&per_page=100` +
+      `&state%5B%5D=created&state%5B%5D=claimed&state%5B%5D=available&state%5B%5D=completed&include%5B%5D=term`;
+    const mock = mockFetch([
+      {
+        url,
+        response: () => rawResponse(loadFixture("courses-page1.json")),
+      },
+    ]);
+    const result = await listAccountCoursesForTerm(BASE, TOKEN, "101", {
+      fetchImpl: mock.fetchImpl,
+    });
+    expect(result.map((c) => c.external_id)).toEqual(["5001", "5002"]);
+    expect(mock.calls).toHaveLength(1);
+    expect(mock.calls[0]!.url).toBe(url);
+  });
+
+  it("respects a custom accountId", async () => {
+    const url =
+      `${BASE}/api/v1/accounts/9999/courses?enrollment_term_id=42&per_page=100` +
+      `&state%5B%5D=created&state%5B%5D=claimed&state%5B%5D=available&state%5B%5D=completed&include%5B%5D=term`;
+    const mock = mockFetch([
+      { url, response: () => rawResponse("[]") },
+    ]);
+    const result = await listAccountCoursesForTerm(BASE, TOKEN, "42", {
+      fetchImpl: mock.fetchImpl,
+      accountId: "9999",
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("URL-encodes the term id (defends against the picker shipping a name)", async () => {
+    // URLSearchParams encodes spaces as `+` (form-style); Canvas accepts
+    // both. The defensive assertion is "the input never reaches the URL
+    // raw" — a space in the path/query would be a malformed request.
+    const mock = mockFetch([
+      {
+        url: (u) =>
+          u.startsWith(
+            `${BASE}/api/v1/accounts/self/courses?enrollment_term_id=2026+Spring`,
+          ),
+        response: () => rawResponse("[]"),
+      },
+    ]);
+    await listAccountCoursesForTerm(BASE, TOKEN, "2026 Spring", {
+      fetchImpl: mock.fetchImpl,
+    });
+    expect(mock.calls).toHaveLength(1);
+    expect(mock.calls[0]!.url).not.toContain("2026 Spring");
+  });
+
+  it("propagates 401 as CanvasApiError unauthorized so the provider can fall back", async () => {
+    const mock = mockFetch([
+      {
+        url: (u) => u.startsWith(`${BASE}/api/v1/accounts/self/courses?`),
+        response: () =>
+          jsonResponse({ errors: ["unauthorized"] }, { status: 401 }),
+      },
+    ]);
+    await expect(
+      listAccountCoursesForTerm(BASE, TOKEN, "101", {
+        fetchImpl: mock.fetchImpl,
+      }),
+    ).rejects.toMatchObject({
+      name: "CanvasApiError",
+      status: 401,
+      code: "unauthorized",
+    });
   });
 });
 

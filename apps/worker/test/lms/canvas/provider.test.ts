@@ -171,13 +171,20 @@ describe("CanvasProvider.listTerms", () => {
 });
 
 describe("CanvasProvider.listMyCourses + listEnrollments", () => {
-  it("delegates to the api helpers with connection's base_url and token", async () => {
-    const url1 =
-      "https://canvas.example.edu/api/v1/courses?enrollment_state=active&per_page=100" +
-      "&enrollment_role%5B%5D=TeacherEnrollment&enrollment_role%5B%5D=TaEnrollment&include%5B%5D=term";
+  // The first URL is the account-scoped endpoint introduced in UNI-64
+  // — admin-tokened callers (FSU operator) get the full course list
+  // for the term from `/api/v1/accounts/self/courses?enrollment_term_id=…`.
+  const ACCOUNT_COURSES_URL =
+    "https://canvas.example.edu/api/v1/accounts/self/courses?enrollment_term_id=101&per_page=100" +
+    "&state%5B%5D=created&state%5B%5D=claimed&state%5B%5D=available&state%5B%5D=completed&include%5B%5D=term";
+  const USER_COURSES_URL =
+    "https://canvas.example.edu/api/v1/courses?enrollment_state=active&per_page=100" +
+    "&enrollment_role%5B%5D=TeacherEnrollment&enrollment_role%5B%5D=TaEnrollment&include%5B%5D=term";
+
+  it("hits the account-scoped courses endpoint first when the token has admin scope", async () => {
     const mock = mockFetch([
       {
-        url: url1,
+        url: ACCOUNT_COURSES_URL,
         response: () => rawResponse(loadFixture("courses-page1.json")),
       },
       {
@@ -192,9 +199,65 @@ describe("CanvasProvider.listMyCourses + listEnrollments", () => {
 
     const courses = await provider.listMyCourses(CONNECTION, "101");
     expect(courses).toHaveLength(2);
+    // Verifies the account-scoped URL was called and the user-scoped
+    // endpoint was NOT — the regression we're guarding against in
+    // UNI-64 is silently falling through to the user-scoped path.
+    expect(mock.calls[0]!.url).toBe(ACCOUNT_COURSES_URL);
 
     const enrollments = await provider.listEnrollments(CONNECTION, "5001");
     expect(enrollments).toHaveLength(4);
+  });
+
+  it("falls back to the user-scoped endpoint on 401 (instructor without admin scope)", async () => {
+    const mock = mockFetch([
+      {
+        url: ACCOUNT_COURSES_URL,
+        response: () =>
+          jsonResponse({ errors: ["unauthorized"] }, { status: 401 }),
+      },
+      {
+        url: USER_COURSES_URL,
+        response: () => rawResponse(loadFixture("courses-page1.json")),
+      },
+    ]);
+    const provider = new CanvasProvider({ fetchImpl: mock.fetchImpl });
+    const courses = await provider.listMyCourses(CONNECTION, "101");
+    expect(courses).toHaveLength(2);
+    expect(mock.calls.map((c) => c.url)).toEqual([
+      ACCOUNT_COURSES_URL,
+      USER_COURSES_URL,
+    ]);
+  });
+
+  it("falls back to the user-scoped endpoint on 403 (admin scope rejected)", async () => {
+    const mock = mockFetch([
+      {
+        url: ACCOUNT_COURSES_URL,
+        response: () => jsonResponse({ errors: ["forbidden"] }, { status: 403 }),
+      },
+      {
+        url: USER_COURSES_URL,
+        response: () => rawResponse(loadFixture("courses-page1.json")),
+      },
+    ]);
+    const provider = new CanvasProvider({ fetchImpl: mock.fetchImpl });
+    const courses = await provider.listMyCourses(CONNECTION, "101");
+    expect(courses).toHaveLength(2);
+  });
+
+  it("re-throws non-401/403 failures from the account-scoped endpoint (no silent fallback on 429)", async () => {
+    const mock = mockFetch([
+      {
+        url: ACCOUNT_COURSES_URL,
+        response: () => jsonResponse({}, { status: 429 }),
+      },
+    ]);
+    const provider = new CanvasProvider({ fetchImpl: mock.fetchImpl });
+    await expect(
+      provider.listMyCourses(CONNECTION, "101"),
+    ).rejects.toMatchObject({ status: 429, code: "rate_limited" });
+    // No fallback fetch was issued.
+    expect(mock.calls).toHaveLength(1);
   });
 });
 
