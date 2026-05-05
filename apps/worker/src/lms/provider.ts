@@ -14,6 +14,15 @@
 // Refresh logic is exposed separately via `refreshToken` so the calling
 // code can decide when to invoke it (typically when `token_expires_at`
 // has elapsed) without each method silently mutating a row.
+//
+// Phase 1 is read-only by design (per the user's locked decision in the
+// epic). The five methods below are the entire surface — there is no
+// `pushGrades`, `pushAssignment`, etc. here, and the `LmsProvider` type
+// must not grow one. Bidirectional providers come in Phase 4 as a
+// separate `LmsWriteProvider` extension that an LMS adapter opts into;
+// keeping write capability off this base interface lets a Phase-1
+// provider implementation declare it conformant without claiming any
+// write surface it doesn't have.
 
 import type {
   LmsAuthCredentials,
