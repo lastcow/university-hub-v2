@@ -214,18 +214,41 @@ add `Domain=example.com`; today it would be a footgun.
 From the repo root:
 
 ```bash
-# Build the SPA. Set VITE_API_BASE_URL so the client points at the Worker
-# instead of relative /api/... (which only works in dev with the Vite proxy).
-VITE_API_BASE_URL=https://university-hub-v2.<your-account>.workers.dev \
-  npm run build
+# Build the SPA. The default-tenant Worker origin is committed to
+# apps/web/.env.production so a fresh checkout `npm run build` "just
+# works"; per-tenant deploys override by exporting the var explicitly:
+#
+#   VITE_API_BASE_URL=https://university-hub-v2.<your-account>.workers.dev \
+#     npm run build
+#
+# `vite.config.ts` hard-fails the production build if the resolved
+# value is empty (UNI-46), and the postbuild gate
+# `scripts/check-web-bundle.mjs` re-asserts that the resolved URL was
+# actually baked into the JS chunk.
+npm run build
 
 # Deploy the built SPA to Cloudflare Pages.
 npx wrangler pages deploy apps/web/dist --project-name=university-hub-v2-web
+
+# Smoke-check the deploy. Asserts the bundle on Pages contains the
+# Worker host, that the Worker preflight allows the Pages origin, and
+# that POST /api/* still returns 405 from Pages (i.e. the SPA must call
+# the Worker directly). Pass --pages-url for previews.
+npm run smoke:pages
+# or, against a preview URL:
+# npm run smoke:pages -- --pages-url=https://<sha>.university-hub-v2-web.pages.dev
 ```
 
 Wrangler prints the deploy URL on success — both the unique preview
 (`https://<sha>.university-hub-v2-web.pages.dev`) and the production alias
 (`https://university-hub-v2-web.pages.dev`).
+
+> **Why the build-time guard?** A production deploy without
+> `VITE_API_BASE_URL` ships a SPA that calls relative `/api/...` paths.
+> Pages serves the SPA HTML fallback for GETs (200 text/html) and
+> rejects POSTs with 405 — sign-in is broken. UNI-43 + UNI-46 were the
+> resulting incidents; the env var is now codified in the repo and the
+> build refuses to start without it.
 
 ### Setting `VITE_API_BASE_URL` permanently on Pages
 

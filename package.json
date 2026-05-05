@@ -27,6 +27,7 @@
     "decommission:university": "node scripts/decommission-university.mjs",
     "audit:gate": "node scripts/audit-gate.mjs",
     "license:check": "node scripts/license-check.mjs",
+    "smoke:pages": "node scripts/smoke-pages.mjs",
     "setup:hooks": "node scripts/setup-git-hooks.mjs",
     "postinstall": "node scripts/setup-git-hooks.mjs"
   },
