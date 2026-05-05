@@ -10,6 +10,12 @@
 // when `status === "ok"` we go straight to `<Navigate />`. When MFA is
 // required, the MFA challenge cookie is already set on the browser so the
 // follow-up POSTs to /api/auth/mfa/* "just work".
+//
+// UNI-60: invitation acceptance also lands here. The accept endpoint sets
+// the MFA challenge cookie on the response and `AcceptInvitationPage`
+// navigates here with `state.mfaEnrollPending === true`; we render the
+// `mfa-enroll` step directly so the user does not have to type their
+// password a second time.
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
@@ -29,8 +35,30 @@ import {
 import { getOnboardingLmsStep } from "@/lib/onboarding";
 import { cn } from "@/lib/utils";
 
-interface LocationState {
+/**
+ * Location state recognized by `SignInPage`. Both fields are optional;
+ * the page degrades gracefully when nothing is passed.
+ *
+ * - `from`: where to send the user after a successful sign-in. Set by
+ *   `ProtectedRoute` when bouncing an unauthenticated visitor away from
+ *   a deep link.
+ * - `mfaEnrollPending` (UNI-60): set by `AcceptInvitationPage` after a
+ *   successful invitation accept. Tells `SignInPage` to skip the
+ *   credentials prompt and render `MfaEnrollStep` directly — the
+ *   challenge cookie was set by the accept endpoint, so the existing
+ *   `/api/auth/mfa/enroll` call "just works".
+ * - `trustedDeviceEligible` (UNI-60): forwarded from the accept
+ *   response so the post-enrollment surface stays consistent with the
+ *   regular sign-in flow.
+ * - `invitedEmail` (UNI-60): the address the invitation was sent to.
+ *   Surfaced as a small reassurance line above the QR code so the user
+ *   knows which account they are enrolling.
+ */
+export interface SignInLocationState {
   from?: string;
+  mfaEnrollPending?: boolean;
+  trustedDeviceEligible?: boolean;
+  invitedEmail?: string;
 }
 
 type Step = "credentials" | "mfa-enroll" | "mfa-challenge";
@@ -39,18 +67,25 @@ export function SignInPage() {
   const { status, user, signIn, setSessionUser } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const locationState = (location.state as SignInLocationState | null) ?? null;
 
-  const [step, setStep] = useState<Step>("credentials");
+  const [step, setStep] = useState<Step>(() =>
+    locationState?.mfaEnrollPending ? "mfa-enroll" : "credentials",
+  );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   // Surfaced from the sign-in response. UNI-47 (university_admin) and
   // UNI-49 (every non-super_admin role) both drive the checkbox via this
-  // flag; super_admin is always-MFA and always false.
-  const [trustedDeviceEligible, setTrustedDeviceEligible] = useState(false);
+  // flag; super_admin is always-MFA and always false. UNI-60 also seeds
+  // it from the invitation-accept response when the user lands here via
+  // the invitation flow.
+  const [trustedDeviceEligible, setTrustedDeviceEligible] = useState(
+    locationState?.trustedDeviceEligible ?? false,
+  );
 
-  const fromState = (location.state as LocationState | null)?.from;
+  const fromState = locationState?.from;
   const fallback = user ? defaultDashboardForRole(user.role) : "/app/dashboard";
   const redirectTo =
     fromState && fromState.startsWith("/app/") ? fromState : fallback;
@@ -115,6 +150,9 @@ export function SignInPage() {
     }
   }
 
+  const arrivedFromInvitation =
+    locationState?.mfaEnrollPending === true && step === "mfa-enroll";
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-muted/30 px-4 py-12">
       <div className="w-full max-w-md">
@@ -124,9 +162,19 @@ export function SignInPage() {
             {step === "credentials"
               ? "Sign in to your account"
               : step === "mfa-enroll"
-                ? "Set up two-factor authentication"
+                ? arrivedFromInvitation
+                  ? "Welcome — let's finish setting up your account"
+                  : "Set up two-factor authentication"
                 : "Enter your verification code"}
           </p>
+          {arrivedFromInvitation && locationState?.invitedEmail ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Enrolling{" "}
+              <span className="font-medium text-foreground">
+                {locationState.invitedEmail}
+              </span>
+            </p>
+          ) : null}
         </div>
 
         {step === "credentials" ? (

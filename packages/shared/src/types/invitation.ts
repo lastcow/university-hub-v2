@@ -56,9 +56,35 @@ export interface InvitationCreateResult {
   email_error: string | null;
 }
 
-/** Body returned from `POST /api/invitations/accept` on success. */
+/**
+ * Body returned from `POST /api/invitations/accept` on success.
+ *
+ * UNI-60: the endpoint no longer mints a session cookie here. UNI-49
+ * made MFA enrollment mandatory for every authenticated role, and
+ * auto-signing the new user in let them skip past it — leaving them
+ * stuck in a sign-in ↔ "Sign in again to complete MFA verification"
+ * loop on their next sign-in (no `mfa_secret` to satisfy a TOTP
+ * challenge). The accept endpoint now sets an MFA challenge cookie and
+ * returns `mfa_enrollment_required: true`; the SPA pivots straight to
+ * the MFA-enroll step on the sign-in page, where verify-enroll mints
+ * the real session after the first TOTP code is accepted.
+ */
 export interface InvitationAcceptResult {
   user_id: Id;
   email: string;
   role: Role;
+  /**
+   * Always `true` today (UNI-49 makes MFA mandatory for every role).
+   * Surfaced as a discriminator so the SPA can branch and so a future
+   * per-role exemption can land without changing the response shape.
+   */
+  mfa_enrollment_required: true;
+  /**
+   * Mirrors `SignInResponse.trusted_device_eligible` — `true` for every
+   * role except `super_admin`. The SPA threads this through to the
+   * MFA challenge surface so the "Trust this device" checkbox stays in
+   * sync between the invitation-accept flow and the regular sign-in
+   * flow.
+   */
+  trusted_device_eligible: boolean;
 }
