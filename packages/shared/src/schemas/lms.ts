@@ -1,11 +1,19 @@
-// LMS-related zod schemas (epic UNI-50 / sub-issue UNI-53).
+// LMS-related zod schemas (epic UNI-50 / reshaped in UNI-63).
 //
-// Validates the body of `POST /api/lms/provider-configs` (create or
-// update) on both the route handler and the React form. The schema is
-// strict: `base_url` must be HTTPS, `client_id` must be non-empty,
-// `client_secret` must be non-empty *on first configure* — the route
-// handler layers in the "row already exists → blank secret means keep
-// the existing one" logic on top of this.
+// Two write surfaces validated here:
+//
+//   1. `POST /api/lms/provider-configs` — admin-only per-university
+//      config. UNI-63 dropped the OAuth `client_id` / `client_secret`
+//      fields; admins now configure only the institution's `base_url`
+//      and the enabled flag. An optional `test_pat` field lets the
+//      admin probe the URL with a Canvas PAT at save-time; the value
+//      is never stored.
+//   2. `POST /api/lms/connections/canvas` — user-facing PAT submit.
+//      Replaces the OAuth `/start` + `/callback` pair. The handler
+//      validates the PAT against `<base_url>/api/v1/users/self` and
+//      stores the encrypted PAT only on a 200 response.
+//
+// Sync-run inputs (UNI-55) are unchanged.
 
 import { z } from "zod";
 
@@ -24,54 +32,54 @@ const baseUrlSchema = z
   .refine((v) => {
     try {
       const u = new URL(v);
-      return u.protocol === "https:";
+      // Reject anything that isn't a clean https origin. Canvas tenant
+      // URLs never carry a path; rejecting one rules out copy-paste
+      // mistakes like `https://canvas.example.edu/login` ending up in
+      // the config row and breaking every subsequent REST call.
+      if (u.protocol !== "https:") return false;
+      if (u.pathname !== "/" && u.pathname !== "") return false;
+      if (u.search !== "" || u.hash !== "") return false;
+      return true;
     } catch {
       return false;
     }
-  }, "Base URL must be a valid https:// URL");
+  }, "Base URL must be an https:// origin with no path or query");
 
-const clientIdSchema = z
+// Personal Access Token shape used both as the admin's optional
+// validate-on-save probe and on the user-facing connect endpoint.
+// Canvas PATs are opaque strings; we cap the length to keep a
+// malicious payload from stuffing a multi-kilobyte value into a
+// stored row but otherwise don't constrain content.
+const personalAccessTokenSchema = z
   .string()
-  .trim()
-  .min(1, "Client ID is required")
-  .max(255, "Client ID is too long");
-
-// Optional on the wire: an empty string OR an absent property both mean
-// "keep the existing secret" on update. The route handler rejects empty
-// values when there is no existing row to fall back to.
-const clientSecretSchema = z
-  .string()
-  .max(2_000, "Client secret is too long")
-  .optional();
+  .min(1, "Personal access token is required")
+  .max(2_000, "Personal access token is too long");
 
 export const updateLmsProviderConfigInputSchema = z.object({
   provider_id: z.enum(PROVIDER_IDS),
   base_url: baseUrlSchema,
-  client_id: clientIdSchema,
-  client_secret: clientSecretSchema,
   enabled: z.boolean(),
+  /** Optional admin-supplied PAT used to probe the configured base URL
+   *  on save (`GET <base_url>/api/v1/users/self`). The handler MUST
+   *  drop this on the floor after the probe — never persist it,
+   *  never echo it back. */
+  test_pat: personalAccessTokenSchema.optional(),
 });
 
 export type UpdateLmsProviderConfigInput = z.infer<
   typeof updateLmsProviderConfigInputSchema
 >;
 
-// `POST /api/lms/connections/canvas/start` body. `purpose` is the
-// optional free-text label Canvas surfaces on its consent screen — we
-// allow the SPA to override it but cap the length so a malicious caller
-// can't stuff a multi-kilobyte string into the authorize URL.
-//
-// `origin` (UNI-57) records whether the dance was kicked off from the
-// post-MFA onboarding step or the standing /app/integrations page; the
-// callback uses it to choose where to redirect on success. Default
-// preserves the pre-UNI-57 behavior (integrations page).
-export const startLmsConnectionInputSchema = z.object({
-  purpose: z.string().trim().max(120).optional(),
-  origin: z.enum(["onboarding", "integrations"]).optional(),
+// `POST /api/lms/connections/canvas` body. The user pastes a PAT they
+// generated in Canvas (Account → Settings → "+ New Access Token") and
+// the Worker validates it against `/api/v1/users/self` before
+// encrypting and storing.
+export const connectCanvasConnectionInputSchema = z.object({
+  personal_access_token: personalAccessTokenSchema,
 });
 
-export type StartLmsConnectionInput = z.infer<
-  typeof startLmsConnectionInputSchema
+export type ConnectCanvasConnectionInput = z.infer<
+  typeof connectCanvasConnectionInputSchema
 >;
 
 // `POST /api/lms/sync-runs/preview` and `POST /api/lms/sync-runs`

@@ -1,13 +1,14 @@
-// Frontend client for the user-facing LMS connections API (UNI-54).
+// Frontend client for the user-facing LMS connections API (UNI-54;
+// reshaped in UNI-63 to use per-user Personal Access Tokens).
 //
-// Tokens never leave the Worker; this module only sees `LmsConnectionPublic`
-// shapes and the start-flow's authorize URL.
+// PATs never leave the Worker; this module only sees `LmsConnectionPublic`
+// shapes and the connect endpoint's success / failure responses.
 
 import type {
+  ConnectCanvasConnectionInput,
+  ConnectLmsConnectionResponse,
   DisconnectLmsConnectionResponse,
   LmsConnectionsResponse,
-  StartLmsConnectionInput,
-  StartLmsConnectionResponse,
 } from "@university-hub/shared";
 
 import { api } from "./api";
@@ -18,11 +19,11 @@ export function listLmsConnections(
   return api.get<LmsConnectionsResponse>("/api/lms/connections", { signal });
 }
 
-export function startCanvasConnection(
-  input: StartLmsConnectionInput = {},
-): Promise<StartLmsConnectionResponse> {
-  return api.post<StartLmsConnectionResponse>(
-    "/api/lms/connections/canvas/start",
+export function connectCanvasConnection(
+  input: ConnectCanvasConnectionInput,
+): Promise<ConnectLmsConnectionResponse> {
+  return api.post<ConnectLmsConnectionResponse>(
+    "/api/lms/connections/canvas",
     input,
   );
 }

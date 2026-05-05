@@ -22,17 +22,11 @@ export type LmsProviderId =
   | "moodle"
   | "google_classroom";
 
-/** Lifecycle of an `lms_connections` row. */
-export type LmsConnectionStatus = "active" | "expired" | "revoked";
-
-/** How the user authenticated against the LMS. `oauth` covers the
- *  standard OAuth Authorization Code dance (with optional refresh
- *  tokens); `pat` covers a long-lived Personal Access Token the user
- *  pastes from the LMS UI. PAT connections leave
- *  `refresh_token_encrypted` NULL — there's no refresh path. Brought
- *  into Phase 1 (was Phase 2) by the user's first-customer Canvas
- *  test target exposing only a PAT. */
-export type LmsAuthMethod = "oauth" | "pat";
+/** Lifecycle of an `lms_connections` row. UNI-63 collapsed the post-
+ *  OAuth `revoked` state — disconnect now deletes the row outright —
+ *  so the only non-active value is `expired`, set when Canvas returns
+ *  401 on a stored PAT (the user has revoked or rotated it in Canvas). */
+export type LmsConnectionStatus = "active" | "expired";
 
 /** Lifecycle of an `lms_sync_runs` row. */
 export type LmsSyncRunStatus =
@@ -49,19 +43,18 @@ export type LmsSyncRunStatus =
 export type LmsRowSource = "manual" | "lms";
 
 /**
- * Per-(university, provider) OAuth client config. Created by a customer
- * admin in Settings → Integrations (UNI-53). The shared secret is
- * field-encrypted on disk (apps/worker/src/crypto/field-encryption.ts);
- * this surface holds the plaintext shape used by the provider methods —
- * the storage row carries `client_secret_encrypted` instead.
+ * Per-(university, provider) integration config. Created by a customer
+ * admin in Settings → Integrations (UNI-53; reshaped in UNI-63 to drop
+ * OAuth client credentials). For Canvas, `base_url` is the institution
+ * Canvas root (e.g. https://frostburg.instructure.com); each user
+ * supplies their own Personal Access Token via the user-facing connect
+ * flow.
  */
 export interface LmsProviderConfig {
   id: Id;
   university_id: Id;
   provider_id: LmsProviderId;
   base_url: string;
-  client_id: string;
-  client_secret: string;
   enabled: boolean;
   configured_by_user_id: Id | null;
   configured_at: IsoDateString;
@@ -70,8 +63,8 @@ export interface LmsProviderConfig {
 
 /**
  * Per-(user, provider) bearer credential. Provider methods accept this
- * shape with raw decrypted tokens; the storage row carries
- * `access_token_encrypted` / `refresh_token_encrypted` instead.
+ * shape with the raw decrypted PAT; the storage row carries
+ * `access_token_encrypted` instead.
  *
  * `university_id` is mirrored from the user's home university for
  * tenant-scoped queries (a user's `university_id` could in principle
@@ -82,34 +75,22 @@ export interface LmsConnection {
   user_id: Id;
   university_id: Id;
   provider_id: LmsProviderId;
-  auth_method: LmsAuthMethod;
   base_url: string;
+  /** The user's Personal Access Token, plaintext in this in-memory
+   *  shape only. The storage row carries `access_token_encrypted`. */
   access_token: string;
-  /** Always null for `auth_method === 'pat'` (no refresh path) and for
-   *  OAuth providers that don't issue a refresh token; populated for
-   *  the standard OAuth Authorization Code grant. */
-  refresh_token: string | null;
-  token_expires_at: IsoDateString | null;
-  scope: string | null;
   status: LmsConnectionStatus;
   last_synced_at: IsoDateString | null;
   created_at: IsoDateString;
   updated_at: IsoDateString;
 }
 
-/** OAuth credentials supplied at sign-in time, before a connection row
- *  exists. The exact shape is provider-specific; this is the substrate
- *  every authenticate() call accepts. */
+/** Credentials supplied at connect time, before a connection row
+ *  exists. UNI-63 collapsed the OAuth-or-PAT shape to PAT-only. */
 export interface LmsAuthCredentials {
-  /** Provider-issued authorization code (OAuth Authorization Code grant). */
-  code?: string;
-  /** Redirect URI sent on the original /authorize request — required by
-   *  most OAuth servers as a binding parameter on the token exchange. */
-  redirect_uri?: string;
-  /** Phase-2 fallback: a Personal Access Token (Canvas etc.). When
-   *  present, providers should skip the OAuth dance and store the PAT
-   *  as `access_token` directly (no refresh). */
-  personal_access_token?: string;
+  /** A Personal Access Token the user pastes from their LMS UI
+   *  (Canvas: Account → Settings → "+ New Access Token"). */
+  personal_access_token: string;
 }
 
 /** Term entry returned by a provider's `listTerms`. Maps onto a row in
@@ -220,22 +201,16 @@ export interface LmsSyncRun {
 
 /**
  * Public shape of a provider config row as returned by the admin
- * `GET /api/lms/provider-configs` listing (UNI-53).
- *
- * Critical contract: `client_secret` is **never** returned by any
- * endpoint. Only `client_id_last4` (last 4 chars of the configured
- * `client_id`, masked for display) and `has_client_secret` (boolean
- * presence flag) leak to the client. The encrypted secret stays on the
- * server. The route handler enforces this; the shared shape just makes
- * the omission visible to the type system.
+ * `GET /api/lms/provider-configs` listing (UNI-53; reshaped in UNI-63
+ * to drop OAuth client fields). The PAT flow has no per-tenant secret
+ * — admins configure only the institution's `base_url` and the
+ * enabled flag.
  */
 export interface LmsProviderConfigPublic {
   id: Id;
   university_id: Id;
   provider_id: LmsProviderId;
   base_url: string;
-  client_id_last4: string;
-  has_client_secret: boolean;
   enabled: boolean;
   configured_by_user_id: Id | null;
   configured_at: IsoDateString;
@@ -291,24 +266,18 @@ export const LMS_PROVIDER_DISPLAY_NAMES: Record<LmsProviderId, string> = {
 
 /**
  * Public shape of an `lms_connections` row as returned by
- * `GET /api/lms/connections` (UNI-54). Tokens never leave the Worker —
- * not the access_token, not the refresh_token, not the encrypted blobs.
- * The shape carries enough metadata for the integrations UI to render
- * connection status and last-sync time without exposing the bearer
- * material to the SPA.
+ * `GET /api/lms/connections` (UNI-54). The PAT never leaves the Worker
+ * — not the plaintext, not the encrypted blob. The shape carries
+ * enough metadata for the integrations UI to render connection status
+ * and last-sync time without exposing the bearer material to the SPA.
  */
 export interface LmsConnectionPublic {
   id: Id;
   user_id: Id;
   university_id: Id;
   provider_id: LmsProviderId;
-  auth_method: LmsAuthMethod;
   base_url: string;
   status: LmsConnectionStatus;
-  scope: string | null;
-  /** Absolute ISO-8601 timestamp; null for PAT connections and for
-   *  OAuth providers that don't surface an expiry on the token response. */
-  token_expires_at: IsoDateString | null;
   last_synced_at: IsoDateString | null;
   created_at: IsoDateString;
   updated_at: IsoDateString;
@@ -318,24 +287,19 @@ export interface LmsConnectionsResponse {
   connections: LmsConnectionPublic[];
 }
 
-/** Successful response of `POST /api/lms/connections/canvas/start`. */
-export interface StartLmsConnectionResponse {
-  /** Provider-side authorize URL the SPA should redirect the browser
-   *  to (`window.location.href = authorize_url`). */
-  authorize_url: string;
-  /** Echo of the CSRF state token we minted; not strictly needed by
-   *  the SPA but useful in dev tooling and browser-based tests. */
-  state: string;
-  /** Provider id this state is bound to (always 'canvas' on this
-   *  endpoint today; here for future-proofing when Phase 3 lands the
-   *  other providers). */
-  provider_id: LmsProviderId;
+/** Successful response of `POST /api/lms/connections/canvas` (the
+ *  PAT-store endpoint). The connection is validated against
+ *  `<base_url>/api/v1/users/self` before the row is written; this
+ *  shape echoes the just-saved row so the SPA can render the
+ *  "Connected" state without a follow-up GET. */
+export interface ConnectLmsConnectionResponse {
+  ok: true;
+  connection: LmsConnectionPublic;
 }
 
 /** Successful response of `POST /api/lms/connections/:id/disconnect`. */
 export interface DisconnectLmsConnectionResponse {
   ok: true;
-  connection: LmsConnectionPublic;
 }
 
 // ---------------------------------------------------------------------------

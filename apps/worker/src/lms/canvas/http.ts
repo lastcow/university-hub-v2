@@ -1,11 +1,12 @@
-// Shared HTTP primitives for the Canvas adapter (sub-issue UNI-52).
+// Shared HTTP primitives for the Canvas adapter (sub-issue UNI-52;
+// reshaped in UNI-63 to drop the OAuth-specific error class).
 //
-// The two callers — `oauth.ts` (token endpoint) and `api.ts` (REST v1) —
+// Callers — the PAT validation probe and the REST v1 client (`api.ts`) —
 // both need:
 //   * a typed `FetchLike` boundary so tests can stub HTTP without
 //     monkey-patching the global,
 //   * a fixed User-Agent so Canvas operators can identify University Hub
-//     traffic in their access logs (issue body: "All requests send
+//     traffic in their access logs ("All requests send
 //     `User-Agent: UniversityHub/1.0`"),
 //   * a small set of typed error classes that the provider layer maps
 //     onto retry / refresh / surface-to-user decisions.
@@ -23,23 +24,11 @@ export type FetchLike = (
 /** Sent on every Canvas request. */
 export const USER_AGENT = "UniversityHub/1.0";
 
-/** Thrown by `oauth.ts` for any token-endpoint failure (network, non-2xx,
- *  malformed body, missing access_token). The `code` field carries
- *  Canvas's `error` value verbatim when available, or a synthetic
- *  classifier (`network_error`, `malformed_response`, `http_<status>`)
- *  when not. */
-export class CanvasOAuthError extends Error {
-  readonly code: string;
-  constructor(code: string, message: string, options?: { cause?: unknown }) {
-    super(message, options);
-    this.name = "CanvasOAuthError";
-    this.code = code;
-  }
-}
-
 /** Thrown by `api.ts` for any REST-call failure. `status` is the HTTP
  *  status code (or `0` for network-layer failures). The provider layer
- *  treats `status === 401` as the "refresh and retry" trigger and
+ *  treats `status === 401` as the "PAT revoked / invalid" classifier
+ *  (the route handler flips the connection row to `expired` and
+ *  surfaces the user-facing "re-paste a fresh token" copy);
  *  `status === 429` as the "rate-limited" classifier; everything else
  *  bubbles to the route handler as a hard sync-error row. */
 export class CanvasApiError extends Error {
@@ -92,4 +81,11 @@ export function parseNextLink(linkHeader: string | null): string | null {
     }
   }
   return null;
+}
+
+/** Trim a trailing "/" off a base URL so concatenation produces clean
+ *  paths. Customers sometimes paste their tenant URL with a trailing
+ *  slash; we normalize defensively. */
+export function trimBaseUrl(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, "");
 }

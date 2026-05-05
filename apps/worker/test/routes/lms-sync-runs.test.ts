@@ -61,12 +61,8 @@ interface ConnectionRow {
   user_id: string;
   university_id: string;
   provider_id: string;
-  auth_method: string;
   base_url: string;
-  access_token_encrypted: string | null;
-  refresh_token_encrypted: string | null;
-  token_expires_at: string | null;
-  scope: string | null;
+  access_token_encrypted: string;
   status: string;
   last_synced_at: string | null;
   created_at: string;
@@ -311,12 +307,8 @@ async function seedActiveConnection(
     user_id,
     university_id,
     provider_id: "canvas",
-    auth_method: "oauth",
     base_url: "https://canvas.example.edu",
     access_token_encrypted: access,
-    refresh_token_encrypted: null,
-    token_expires_at: null,
-    scope: null,
     status: "active",
     last_synced_at: null,
     created_at: "2026-05-01T00:00:00.000Z",
