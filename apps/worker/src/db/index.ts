@@ -63,10 +63,14 @@ export async function execute(
 }
 
 /**
- * Run several prepared statements as a single D1 batch (atomic per-statement,
- * not a transaction in the SQL sense — D1 batches are sequenced in one round-
- * trip but each statement commits independently; use it for grouping reads
- * or fire-and-forget writes, not for invariants that need rollback).
+ * Run several prepared statements as a single D1 batch.
+ *
+ * Per Cloudflare D1: a `db.batch(...)` is an implicit SQL transaction —
+ * statements run sequentially in one round-trip, and if any statement
+ * fails the entire sequence is aborted and rolled back. This is the
+ * atomicity primitive the platform exposes (it does not have interactive
+ * transactions). Used by the user-deletion cascade (UNI-61) where the
+ * issue spec requires "if any step fails, the whole delete rolls back".
  */
 export async function batch(
   db: D1Database,

@@ -21,11 +21,22 @@ function normalize(sql: string): string {
 
 export type WriteHook = (sql: string, params: readonly unknown[]) => void;
 
+/**
+ * `batch(...)` resolver. By default `db.batch` runs each statement through
+ * `recordRun` exactly like a sequential `execute()` would, so write-hooks
+ * fire and `executions` records the SQL. Tests that want to simulate a
+ * mid-cascade rollback register a `batch` failure via `failBatchOnce` —
+ * the next batch call throws and **none** of its statements are recorded
+ * (matching the "the whole delete rolls back" guarantee from the issue).
+ */
+
 export class ProgrammableD1 {
   readonly executions: RecordedExec[] = [];
+  readonly batches: RecordedExec[][] = [];
   private firstResolvers: FirstResolver[] = [];
   private allResolvers: AllResolver[] = [];
   private writeHooks: WriteHook[] = [];
+  private nextBatchFailure: Error | null = null;
 
   /**
    * Register a `first()` resolver. The first resolver to return a non-undefined
@@ -46,6 +57,46 @@ export class ProgrammableD1 {
 
   prepare(sql: string): ProgrammableStatement {
     return new ProgrammableStatement(this, sql, []);
+  }
+
+  /**
+   * Mock `env.DB.batch(...)`. Real D1 runs the supplied prepared statements
+   * inside a SQL transaction and rolls everything back on any failure;
+   * we mirror that semantic by either:
+   *   (a) running each statement through `recordRun` so write-hooks fire
+   *       and the SQL appears in `executions` AND the batch in `batches`,
+   *       or
+   *   (b) if a failure was queued via `failBatchOnce()`, throwing without
+   *       recording anything — leaving the in-memory fixtures untouched.
+   */
+  async batch(prepared: ReadonlyArray<ProgrammableStatement>): Promise<unknown[]> {
+    if (this.nextBatchFailure) {
+      const err = this.nextBatchFailure;
+      this.nextBatchFailure = null;
+      throw err;
+    }
+    const recorded: RecordedExec[] = [];
+    for (const stmt of prepared) {
+      const sql = stmt.getSql();
+      const params = stmt.getParams();
+      const normalized = normalize(sql);
+      const exec: RecordedExec = { sql, normalizedSql: normalized, params };
+      this.executions.push(exec);
+      recorded.push(exec);
+      for (const hook of this.writeHooks) hook(normalized, params);
+    }
+    this.batches.push(recorded);
+    return prepared.map(() => ({ meta: { changes: 1, last_row_id: null } }));
+  }
+
+  /**
+   * Queue a failure for the *next* `batch(...)` call. The failure throws
+   * before any statement is recorded so tests can assert that no writes
+   * landed (which is what "the cascade rolls back" looks like from the
+   * caller's vantage point). Call once per failure scenario.
+   */
+  failBatchOnce(message = "simulated batch failure"): void {
+    this.nextBatchFailure = new Error(message);
   }
 
   // Internal: invoked by ProgrammableStatement.
@@ -94,6 +145,15 @@ export class ProgrammableStatement {
 
   bind(...params: unknown[]): ProgrammableStatement {
     return new ProgrammableStatement(this.db, this.sql, params);
+  }
+
+  // Internal accessors so `ProgrammableD1.batch(...)` can introspect a
+  // prepared statement without exposing the constructor parameters.
+  getSql(): string {
+    return this.sql;
+  }
+  getParams(): readonly unknown[] {
+    return this.params;
   }
 
   async first<T>(): Promise<T | null> {

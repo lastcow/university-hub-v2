@@ -178,6 +178,7 @@ import {
   handleUpdateUniversity,
 } from "./routes/universities.js";
 import {
+  handleDeleteUser,
   handleGetUser,
   handleListUsers,
   handleUpdateUser,
@@ -792,6 +793,9 @@ async function routeApi(
       }
       if (!sub && request.method === "PATCH") {
         return handleUpdateUser(ctx, userId);
+      }
+      if (!sub && request.method === "DELETE") {
+        return handleDeleteUser(ctx, userId);
       }
       if (sub === "role" && request.method === "PATCH") {
         return handleUpdateUserRole(ctx, userId);

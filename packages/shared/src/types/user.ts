@@ -45,3 +45,40 @@ export interface UserStatusChangeResult {
   email_status: EmailLogStatus;
   email_error: string | null;
 }
+
+/**
+ * Response from `DELETE /api/users/:id` (UNI-61). The post-delete row is
+ * returned in its anonymized form so the SPA can refresh its cache and
+ * re-render the user as `Removed User #N` without a follow-up GET.
+ *
+ * `idempotent` is true when the call was a no-op because the user was
+ * already removed — the row in `user` is the existing anonymized row,
+ * unchanged. Distinguishing this from a fresh deletion lets the SPA tell
+ * the operator "Already removed" instead of celebrating a duplicate
+ * destructive action.
+ */
+export interface DeleteUserResult {
+  user: UserListItem;
+  idempotent: boolean;
+}
+
+/**
+ * Returns the name to show for a user in any UI surface. When the user is
+ * a "removed" tombstone (UNI-61 anonymization), we replace their actual
+ * `name` (which is itself already anonymized to "Removed User #N" but may
+ * leak through joins in older audit rows) with a stable display string
+ * derived from the row's `id`. Pre-anonymized rows are returned as-is.
+ *
+ * The numeric suffix is the first 8 hex chars of the UUID. It's short
+ * enough to render in a table cell, stable across renders, and never
+ * collides because UUIDs themselves don't.
+ */
+export function displayUserName(
+  user: { id: Id; name: string; status: UserStatus },
+): string {
+  if (user.status === "deleted") {
+    const suffix = user.id.replace(/-/g, "").slice(0, 8);
+    return `Removed User #${suffix}`;
+  }
+  return user.name;
+}

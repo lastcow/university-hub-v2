@@ -5,12 +5,21 @@
 // hides options the actor isn't allowed to use.
 
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, KeyRound, ShieldOff, ShieldCheck, UserCog, UserX } from "lucide-react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import {
+  ArrowLeft,
+  KeyRound,
+  ShieldOff,
+  ShieldCheck,
+  Trash2,
+  UserCog,
+  UserX,
+} from "lucide-react";
 
 import {
   ROLE_LABELS,
   canManageTargetUser,
+  displayUserName,
   rolesAssignableBy,
   type Role,
   type UpdateUserStatusInput,
@@ -45,7 +54,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/use-toast";
 import { ApiClientError } from "@/lib/api";
-import { getUser, updateUserRole, updateUserStatus } from "@/lib/users";
+import { deleteUser, getUser, updateUserRole, updateUserStatus } from "@/lib/users";
 
 interface State {
   status: "loading" | "ok" | "error";
@@ -55,12 +64,19 @@ interface State {
 
 export function UserDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { user: currentUser } = useAuth();
   const [state, setState] = useState<State>({ status: "loading" });
   const [roleDialogOpen, setRoleDialogOpen] = useState(false);
   const [statusDialogOpen, setStatusDialogOpen] = useState(false);
+  const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
   const [pendingRole, setPendingRole] = useState<Role | null>(null);
   const [pendingStatus, setPendingStatus] = useState<ManageableStatus | null>(null);
+  // The remove dialog requires the operator to type the user's email so a
+  // mistyped url or a fat-finger click on the destructive button doesn't
+  // accidentally tombstone the wrong user.
+  const [removeEmailConfirm, setRemoveEmailConfirm] = useState("");
+  const [removeReason, setRemoveReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   function load(signal?: AbortSignal) {
@@ -129,6 +145,36 @@ export function UserDetailPage() {
     }
   }
 
+  async function applyRemove() {
+    if (!id || !target) return;
+    setSubmitting(true);
+    try {
+      const result = await deleteUser(id, removeReason ? { reason: removeReason } : {});
+      const tone = result.idempotent ? "default" : "success";
+      toast({
+        title: result.idempotent ? "User already removed" : "User removed",
+        description: result.idempotent
+          ? "This account had already been removed; nothing changed."
+          : "Their credentials are gone and their record is anonymized.",
+        variant: tone,
+      });
+      setRemoveDialogOpen(false);
+      // Navigate back to the directory; the removed user's row stays
+      // accessible via "Show removed users" if QA needs to verify the
+      // anonymized state.
+      navigate("/app/users");
+    } catch (cause) {
+      toast({
+        title: "Could not remove user",
+        description:
+          cause instanceof ApiClientError ? cause.message : "Removal failed.",
+        variant: "destructive",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function applyStatusChange(newStatus: ManageableStatus) {
     if (!id || !target) return;
     setSubmitting(true);
@@ -190,7 +236,7 @@ export function UserDetailPage() {
             <CardHeader>
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <CardTitle>{target.name}</CardTitle>
+                  <CardTitle>{displayUserName(target)}</CardTitle>
                   <CardDescription>{target.email}</CardDescription>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -266,6 +312,19 @@ export function UserDetailPage() {
                     Suspend
                   </Button>
                 ) : null}
+                {target.status !== "deleted" ? (
+                  <Button
+                    variant="destructive"
+                    onClick={() => {
+                      setRemoveEmailConfirm("");
+                      setRemoveReason("");
+                      setRemoveDialogOpen(true);
+                    }}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Remove user
+                  </Button>
+                ) : null}
               </CardContent>
             </Card>
           ) : (
@@ -320,6 +379,80 @@ export function UserDetailPage() {
                   disabled={submitting || (pendingRole ?? target.role) === target.role}
                 >
                   {submitting ? "Saving…" : "Confirm change"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={removeDialogOpen} onOpenChange={setRemoveDialogOpen}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Remove user</DialogTitle>
+                <DialogDescription>
+                  This is irreversible. The account's credentials will be
+                  destroyed and their personal information anonymized
+                  (name, email, MFA secrets). Educational records (grades,
+                  enrollments, audit log entries, FERPA disclosure log) are
+                  preserved per the institution's retention policy.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-3 text-sm">
+                <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
+                  <li>Active sessions, MFA secrets, and trusted devices are deleted.</li>
+                  <li>Pending invitations addressed to this user are revoked.</li>
+                  <li>Active disclosure consents are revoked (logged, not deleted).</li>
+                  <li>
+                    The user's name will display as <em>Removed User #N</em> across
+                    the platform from now on.
+                  </li>
+                </ul>
+                <div>
+                  <Label htmlFor="remove-confirm">
+                    Type <span className="font-mono">{target.email}</span> to confirm.
+                  </Label>
+                  <input
+                    id="remove-confirm"
+                    type="email"
+                    autoComplete="off"
+                    value={removeEmailConfirm}
+                    onChange={(e) => setRemoveEmailConfirm(e.target.value)}
+                    className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    disabled={submitting}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="remove-reason">Reason (optional)</Label>
+                  <textarea
+                    id="remove-reason"
+                    rows={3}
+                    maxLength={500}
+                    value={removeReason}
+                    onChange={(e) => setRemoveReason(e.target.value)}
+                    placeholder="e.g. Off-boarded — contract ended 2026-05-31"
+                    className="mt-1 flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    disabled={submitting}
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Recorded in the audit log alongside the actor's identity.
+                  </p>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setRemoveDialogOpen(false)}
+                  disabled={submitting}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={applyRemove}
+                  disabled={submitting || removeEmailConfirm.trim() !== target.email}
+                >
+                  {submitting ? "Removing…" : "Remove"}
                 </Button>
               </DialogFooter>
             </DialogContent>
