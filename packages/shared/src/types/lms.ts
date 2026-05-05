@@ -191,3 +191,55 @@ export interface LmsSyncRun {
   summary: LmsSyncSummary | null;
   errors: LmsSyncError[] | null;
 }
+
+/**
+ * Public shape of a provider config row as returned by the admin
+ * `GET /api/lms/provider-configs` listing (UNI-53).
+ *
+ * Critical contract: `client_secret` is **never** returned by any
+ * endpoint. Only `client_id_last4` (last 4 chars of the configured
+ * `client_id`, masked for display) and `has_client_secret` (boolean
+ * presence flag) leak to the client. The encrypted secret stays on the
+ * server. The route handler enforces this; the shared shape just makes
+ * the omission visible to the type system.
+ */
+export interface LmsProviderConfigPublic {
+  id: Id;
+  university_id: Id;
+  provider_id: LmsProviderId;
+  base_url: string;
+  client_id_last4: string;
+  has_client_secret: boolean;
+  enabled: boolean;
+  configured_by_user_id: Id | null;
+  configured_at: IsoDateString;
+  updated_at: IsoDateString;
+}
+
+/**
+ * One entry in the registry summary returned by the listing endpoint.
+ * Lets the admin UI render every provider in the registry — even those
+ * the customer hasn't configured yet — alongside a Configured /
+ * Not configured pill, without making the client know the registry's
+ * contents up front.
+ */
+export interface LmsProviderRegistryEntry {
+  provider_id: LmsProviderId;
+  display_name: string;
+  /** The persisted config row, or null when this university hasn't
+   *  configured this provider yet. */
+  config: LmsProviderConfigPublic | null;
+}
+
+export interface LmsProviderConfigsResponse {
+  providers: LmsProviderRegistryEntry[];
+}
+
+/** Display labels for the registry entries — kept here so the admin UI
+ *  doesn't have to hard-code provider name strings. */
+export const LMS_PROVIDER_DISPLAY_NAMES: Record<LmsProviderId, string> = {
+  canvas: "Canvas",
+  blackboard: "Blackboard",
+  moodle: "Moodle",
+  google_classroom: "Google Classroom",
+};

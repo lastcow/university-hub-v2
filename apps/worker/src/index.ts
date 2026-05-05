@@ -79,6 +79,11 @@ import {
   handleUpdateEscalationContact,
 } from "./routes/escalation-contacts.js";
 import {
+  handleDeleteLmsProviderConfig,
+  handleListLmsProviderConfigs,
+  handleUpsertLmsProviderConfig,
+} from "./routes/lms-provider-configs.js";
+import {
   handleCreateCourse,
   handleCreateCourseAssignment,
   handleDeleteCourse,
@@ -206,6 +211,8 @@ const USER_TRUSTED_DEVICES_RE =
 const LEGAL_KIND_RE = /^\/api\/legal\/(terms|privacy)\/?$/;
 const LEGAL_ADMIN_KIND_RE = /^\/api\/legal\/admin\/(terms|privacy)\/?$/;
 const ESCALATION_CONTACT_RE = /^\/api\/escalation-contacts\/([a-z_]+)\/?$/;
+const LMS_PROVIDER_CONFIG_ID_RE =
+  /^\/api\/lms\/provider-configs\/([0-9a-fA-F-]{36})\/?$/;
 
 export default {
   async fetch(request, env): Promise<Response> {
@@ -507,6 +514,32 @@ async function routeApi(
       return handleUpdateEscalationContact(
         ctx,
         escalationContactMatch[1] as string,
+      );
+    }
+
+    // LMS provider configs (UNI-53). Per-university OAuth client config
+    // for each LMS integration. RBAC + tenant scoping live in the
+    // handlers; the /:id DELETE form is matched via a UUID regex so
+    // the static-path collection routes don't get swallowed.
+    if (
+      url.pathname === "/api/lms/provider-configs" &&
+      request.method === "GET"
+    ) {
+      return handleListLmsProviderConfigs(ctx);
+    }
+    if (
+      url.pathname === "/api/lms/provider-configs" &&
+      request.method === "POST"
+    ) {
+      return handleUpsertLmsProviderConfig(ctx);
+    }
+    const lmsProviderConfigMatch = LMS_PROVIDER_CONFIG_ID_RE.exec(
+      url.pathname,
+    );
+    if (lmsProviderConfigMatch && request.method === "DELETE") {
+      return handleDeleteLmsProviderConfig(
+        ctx,
+        lmsProviderConfigMatch[1] as string,
       );
     }
 
