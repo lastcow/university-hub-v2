@@ -63,6 +63,7 @@ interface ConnectionRow {
   provider_id: string;
   base_url: string;
   access_token_encrypted: string;
+  external_user_id: string | null;
   status: string;
   last_synced_at: string | null;
   created_at: string;
@@ -296,6 +297,7 @@ async function seedActiveConnection(
   user_id: string,
   university_id: string,
   id: string,
+  overrides: Partial<ConnectionRow> = {},
 ): Promise<ConnectionRow> {
   const access = await encryptForUniversity(
     ENV,
@@ -309,10 +311,12 @@ async function seedActiveConnection(
     provider_id: "canvas",
     base_url: "https://canvas.example.edu",
     access_token_encrypted: access,
+    external_user_id: null,
     status: "active",
     last_synced_at: null,
     created_at: "2026-05-01T00:00:00.000Z",
     updated_at: "2026-05-01T00:00:00.000Z",
+    ...overrides,
   };
 }
 

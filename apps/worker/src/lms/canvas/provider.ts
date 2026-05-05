@@ -73,8 +73,11 @@ export class CanvasProvider implements LmsProvider {
     }
     // Validate the PAT against `/api/v1/users/self` before returning a
     // success shape — a 401 throws so the caller (route handler) can
-    // surface "invalid token" without ever writing a row.
-    await validatePersonalAccessToken(
+    // surface "invalid token" without ever writing a row. The
+    // validation also returns the calling user's Canvas id, which the
+    // route persists onto the connection row for later owner-match
+    // (UNI-67 iteration 3).
+    const validation = await validatePersonalAccessToken(
       providerConfig.base_url,
       creds.personal_access_token,
       { fetchImpl: this.deps.fetchImpl },
@@ -88,6 +91,7 @@ export class CanvasProvider implements LmsProvider {
       provider_id: "canvas",
       base_url: providerConfig.base_url,
       access_token: creds.personal_access_token,
+      external_user_id: validation.external_user_id,
       status: "active",
       last_synced_at: null,
       created_at: nowIso,

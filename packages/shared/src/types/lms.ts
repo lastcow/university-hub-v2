@@ -79,6 +79,14 @@ export interface LmsConnection {
   /** The user's Personal Access Token, plaintext in this in-memory
    *  shape only. The storage row carries `access_token_encrypted`. */
   access_token: string;
+  /** Provider-native user id of the connection owner (Canvas's
+   *  `/api/v1/users/self.id` at connect time). Captured so the
+   *  reconciliation matcher can link enrollments where the enrolled
+   *  user IS the operator who pasted the PAT, sidestepping the
+   *  Hub-email vs institutional-email mismatch (UNI-67 iteration 3).
+   *  Null for connections created before the column landed and for
+   *  providers that don't expose a self-id. */
+  external_user_id: string | null;
   status: LmsConnectionStatus;
   last_synced_at: IsoDateString | null;
   created_at: IsoDateString;

@@ -66,6 +66,7 @@ interface ConnectionRow {
   provider_id: string;
   base_url: string;
   access_token_encrypted: string;
+  external_user_id: string | null;
   status: string;
   last_synced_at: string | null;
   created_at: string;
@@ -137,6 +138,7 @@ function makeDb(seed: SeedOpts = {}): {
         provider_id,
         base_url,
         access_token_encrypted,
+        external_user_id,
         status,
         last_synced_at,
         created_at,
@@ -148,6 +150,7 @@ function makeDb(seed: SeedOpts = {}): {
         string,
         string,
         string,
+        string | null,
         string,
         string | null,
         string,
@@ -160,6 +163,7 @@ function makeDb(seed: SeedOpts = {}): {
         provider_id,
         base_url,
         access_token_encrypted,
+        external_user_id,
         status,
         last_synced_at,
         created_at,
@@ -167,22 +171,32 @@ function makeDb(seed: SeedOpts = {}): {
       });
     } else if (sql.startsWith("UPDATE lms_connections")) {
       // Re-connect SQL: SET university_id = ?, base_url = ?,
-      //   access_token_encrypted = ?, status = ?, updated_at = ?
-      //   WHERE id = ?
+      //   access_token_encrypted = ?, external_user_id = ?, status = ?,
+      //   updated_at = ? WHERE id = ?
       if (sql.includes("SET university_id = ?")) {
         const [
           university_id,
           base_url,
           access_token_encrypted,
+          external_user_id,
           status,
           updated_at,
           id,
-        ] = params as [string, string, string, string, string, string];
+        ] = params as [
+          string,
+          string,
+          string,
+          string | null,
+          string,
+          string,
+          string,
+        ];
         const row = connections.find((r) => r.id === id);
         if (row) {
           row.university_id = university_id;
           row.base_url = base_url;
           row.access_token_encrypted = access_token_encrypted;
+          row.external_user_id = external_user_id;
           row.status = status;
           row.updated_at = updated_at;
         }
@@ -268,6 +282,7 @@ function seedConfigRow(university_id: string): ConfigRow {
 async function seedActiveConnectionRow(
   user_id: string,
   university_id: string,
+  overrides: Partial<ConnectionRow> = {},
 ): Promise<ConnectionRow> {
   const accessCt = await encryptForUniversity(ENV, "live-access-token", university_id);
   return {
@@ -277,10 +292,12 @@ async function seedActiveConnectionRow(
     provider_id: "canvas",
     base_url: "https://canvas.example.edu",
     access_token_encrypted: accessCt,
+    external_user_id: null,
     status: "active",
     last_synced_at: null,
     created_at: "2026-05-01T00:00:00.000Z",
     updated_at: "2026-05-01T00:00:00.000Z",
+    ...overrides,
   };
 }
 
@@ -518,6 +535,12 @@ describe("POST /api/lms/connections/canvas", () => {
     expect(meta).toContain('"provider_id":"canvas"');
     expect(meta).toContain('"created":true');
     expect(meta).not.toContain("the-real-canvas-pat");
+
+    // UNI-67 iteration 3: capture the calling user's Canvas id from
+    // the validation response (`/users/self.id = 4242`) and persist
+    // it on the row so reconcile can owner-link the operator's own
+    // enrollments without needing email parity.
+    expect(row.external_user_id).toBe("4242");
   });
 
   it("re-uses an existing row (UPDATE) when the user re-pastes a token", async () => {
@@ -563,6 +586,10 @@ describe("POST /api/lms/connections/canvas", () => {
     );
     expect(decrypted).toBe("new-rotated-pat");
     expect(row.status).toBe("active");
+    // UNI-67 iteration 3: re-paste path also re-captures
+    // external_user_id (the new token might belong to a different
+    // Canvas user — re-validate fully).
+    expect(row.external_user_id).toBe("4242");
 
     const audits = db.inserts("audit_logs");
     expect(audits.length).toBe(1);
