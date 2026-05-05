@@ -16,6 +16,7 @@ export {
 export {
   listTerms,
   listMyCourses,
+  listAccountCoursesForTerm,
   listEnrollments,
   deriveTermsFromCourses,
   validatePersonalAccessToken,
