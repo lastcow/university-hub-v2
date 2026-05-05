@@ -492,9 +492,17 @@ export async function handleLmsSyncRunPreview(
   // surface we accept the cost since Phase 1 universities are small.
   // If the listing fails for a single course we record a 0 and keep
   // going — the count is an estimate, not a contract.
+  //
+  // `students_total` is the count of UNIQUE students across all
+  // courses, not the sum of per-course rows: a student in three
+  // courses is one student (UNI-67 follow-up — user explicit:
+  // "students needs to pull from all courses, consider one student may
+  // register multiple classes"). Dedup is by Canvas user_id, which
+  // every enrollment row carries even when the bulk listing redacts
+  // email/login_id (FERPA-strict tenants).
+  const studentUserIds = new Set<string>();
   const studentEmails = new Set<string>();
   const courseExternalIds: string[] = [];
-  let studentsTotal = 0;
   let truncated = false;
   for (const course of courses) {
     courseExternalIds.push(course.external_id);
@@ -511,10 +519,11 @@ export async function handleLmsSyncRunPreview(
     }
     for (const enr of rows) {
       if (enr.role !== "student") continue;
-      studentsTotal += 1;
+      studentUserIds.add(enr.external_user_id);
       if (enr.email) studentEmails.add(enr.email.toLowerCase());
     }
   }
+  const studentsTotal = studentUserIds.size;
 
   // Estimate "new" rows via the sources of truth that already shipped
   // in UNI-51:

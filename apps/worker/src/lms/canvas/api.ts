@@ -623,6 +623,17 @@ function mapEnrollment(raw: CanvasEnrollment): LmsEnrollment | null {
  * `include[]=user` ensures the response carries name/email; without it
  * Canvas only returns ids and the reconciliation engine has nothing to
  * match against.
+ *
+ * UNI-67 follow-up: at FERPA-strict tenants (e.g. Frostburg) the
+ * embedded `user.email` and `user.login_id` are returned as `null` for
+ * a non-admin teacher PAT — the bulk listing only exposes `name` and
+ * `id`. The single-user profile endpoint (`GET /api/v1/users/:id/profile`)
+ * is allowed in that context and DOES expose `login_id` (institutional
+ * email-as-username). For each enrollment whose bulk response had no
+ * email/login_id, we fan out one profile lookup, dedup by user id, and
+ * merge the result back in. With this in place the per-row identifier
+ * pipeline (preview dedup + reconcile match) has something to work with
+ * for every real student/faculty row Canvas exposes.
  */
 export async function listEnrollments(
   baseUrl: string,
@@ -640,15 +651,119 @@ export async function listEnrollments(
   params.append("include[]", "user");
   params.append("include[]", "email");
   const url = `${trimBaseUrl(baseUrl)}/api/v1/courses/${encodeURIComponent(courseId)}/enrollments?${params.toString()}`;
-  return getAllPages<LmsEnrollment>(
+  const raw = await getAllPages<CanvasEnrollment>(
     url,
     accessToken,
     fetchImpl,
-    (body) => {
-      const list = Array.isArray(body) ? (body as CanvasEnrollment[]) : [];
-      return list
-        .map(mapEnrollment)
-        .filter((e): e is LmsEnrollment => e !== null);
-    },
+    (body) => (Array.isArray(body) ? (body as CanvasEnrollment[]) : []),
   );
+
+  // Identify rows where the bulk listing redacted both email and
+  // login_id. For those, fan out single-user profile lookups (deduped
+  // by user id; one network round-trip per *unique* missing user). On
+  // tenants that don't redact, this loop is empty and the cost is zero.
+  const profileTargets = new Map<string, CanvasEnrollment[]>();
+  for (const row of raw) {
+    if (row.user_id === undefined || row.user_id === null) continue;
+    const u = isObject(row.user) ? row.user : null;
+    const hasEmail = typeof u?.email === "string" && u.email.length > 0;
+    const hasLogin = typeof u?.login_id === "string" && u.login_id.length > 0;
+    if (hasEmail || hasLogin) continue;
+    const id = String(row.user_id);
+    const list = profileTargets.get(id) ?? [];
+    list.push(row);
+    profileTargets.set(id, list);
+  }
+  if (profileTargets.size > 0) {
+    const profiles = await Promise.all(
+      Array.from(profileTargets.keys()).map((id) =>
+        fetchUserProfile(baseUrl, accessToken, id, fetchImpl).then(
+          (p) => [id, p] as const,
+        ),
+      ),
+    );
+    for (const [id, profile] of profiles) {
+      if (!profile) continue;
+      for (const row of profileTargets.get(id) ?? []) {
+        row.user = mergeUserFromProfile(row.user, profile);
+      }
+    }
+  }
+
+  return raw
+    .map(mapEnrollment)
+    .filter((e): e is LmsEnrollment => e !== null);
+}
+
+interface CanvasUserProfile {
+  id?: number | string;
+  name?: string;
+  login_id?: string | null;
+  primary_email?: string | null;
+}
+
+/** Fetch `/api/v1/users/:id/profile` and return the parsed shape, or
+ *  null on any failure (404 from a deleted user, 403 from a restricted
+ *  account, malformed JSON). The caller treats null as "no extra data
+ *  available, fall through with the original row" — a single missing
+ *  profile must not fail the whole enrollment list. */
+async function fetchUserProfile(
+  baseUrl: string,
+  accessToken: string,
+  userId: string,
+  fetchImpl: FetchLike,
+): Promise<CanvasUserProfile | null> {
+  const url = `${trimBaseUrl(baseUrl)}/api/v1/users/${encodeURIComponent(userId)}/profile`;
+  let response: Response;
+  try {
+    response = await fetchImpl(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "User-Agent": USER_AGENT,
+        Accept: "application/json",
+      },
+    });
+  } catch {
+    return null;
+  }
+  if (!response.ok) return null;
+  try {
+    const body = await response.json();
+    return isObject(body) ? (body as CanvasUserProfile) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Merge profile-supplied identifiers into the enrollment's embedded
+ *  user blob without overwriting fields that were already populated.
+ *  The profile endpoint exposes `login_id` (institutional username,
+ *  email-shaped at FSU and most universities) and `primary_email`;
+ *  bulk listings return `name`, so we prefer the bulk row's name. */
+function mergeUserFromProfile(
+  existing: CanvasEnrollmentUser | undefined,
+  profile: CanvasUserProfile,
+): CanvasEnrollmentUser {
+  const merged: CanvasEnrollmentUser = { ...(existing ?? {}) };
+  if (
+    (merged.email === null || merged.email === undefined || merged.email === "") &&
+    typeof profile.primary_email === "string" &&
+    profile.primary_email.length > 0
+  ) {
+    merged.email = profile.primary_email;
+  }
+  if (
+    (merged.login_id === null ||
+      merged.login_id === undefined ||
+      merged.login_id === "") &&
+    typeof profile.login_id === "string" &&
+    profile.login_id.length > 0
+  ) {
+    merged.login_id = profile.login_id;
+  }
+  if (!merged.name && typeof profile.name === "string") {
+    merged.name = profile.name;
+  }
+  return merged;
 }

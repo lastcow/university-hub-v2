@@ -668,8 +668,18 @@ async function processEnrollment(args: EnrollmentProcessingArgs): Promise<void> 
         status: "pending",
       };
     } else {
+      // No external linkage, no email match (or no email at all on
+      // FERPA-strict tenants where Canvas withholds email/login_id
+      // from non-admin teacher PATs). The error message carries the
+      // identifiers an admin can see in Canvas's web UI (name +
+      // Canvas user_id) so they can reconcile manually.
+      const ident = [
+        enrollment.name ?? "(unnamed)",
+        `canvas_user_id=${enrollment.external_user_id}`,
+        `email=${email ?? "null"}`,
+      ].join(" / ");
       throw new Error(
-        `no_hub_user_for_${enrollment.role}: faculty/TA enrollments require an existing Hub user (email=${email ?? "null"})`,
+        `no_hub_user_for_${enrollment.role}: ${ident} — faculty/TA enrollments require an existing Hub user; students require an email-shaped identifier (Canvas email or login_id).`,
       );
     }
   } else if (matchedByEmail && isStudent) {
