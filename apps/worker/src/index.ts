@@ -85,10 +85,9 @@ import {
   handleUpsertLmsProviderConfig,
 } from "./routes/lms-provider-configs.js";
 import {
-  handleCanvasOAuthCallback,
+  handleConnectCanvasConnection,
   handleDisconnectLmsConnection,
   handleListLmsConnections,
-  handleStartCanvasConnection,
 } from "./routes/lms-connections.js";
 import {
   handleCreateLmsSyncRun,
@@ -580,9 +579,10 @@ async function routeApi(
       );
     }
 
-    // LMS user connections (UNI-54). Static collection paths and the
-    // Canvas-specific OAuth dance match before the per-id `/disconnect`
-    // regex so the static segments don't get parsed as UUIDs.
+    // LMS user connections (UNI-54; PAT flow per UNI-63). Static
+    // collection paths and the Canvas-specific connect endpoint match
+    // before the per-id `/disconnect` regex so the static segments
+    // don't get parsed as UUIDs.
     if (
       url.pathname === "/api/lms/connections" &&
       request.method === "GET"
@@ -590,16 +590,10 @@ async function routeApi(
       return handleListLmsConnections(ctx);
     }
     if (
-      url.pathname === "/api/lms/connections/canvas/start" &&
+      url.pathname === "/api/lms/connections/canvas" &&
       request.method === "POST"
     ) {
-      return handleStartCanvasConnection(ctx);
-    }
-    if (
-      url.pathname === "/api/lms/connections/canvas/callback" &&
-      request.method === "GET"
-    ) {
-      return handleCanvasOAuthCallback(ctx);
+      return handleConnectCanvasConnection(ctx);
     }
     const lmsConnectionDisconnectMatch = LMS_CONNECTION_DISCONNECT_RE.exec(
       url.pathname,

@@ -72,12 +72,8 @@ interface ConnectionRow extends Row {
   user_id: string;
   university_id: string;
   provider_id: LmsProviderId;
-  auth_method: "oauth" | "pat";
   base_url: string;
-  access_token_encrypted: string | null;
-  refresh_token_encrypted: string | null;
-  token_expires_at: string | null;
-  scope: string | null;
+  access_token_encrypted: string;
   status: LmsConnectionStatus;
   last_synced_at: string | null;
   created_at: string;
@@ -97,9 +93,8 @@ interface SyncRunRow extends Row {
 }
 
 const SELECT_CONNECTION = `
-  SELECT id, user_id, university_id, provider_id, auth_method, base_url,
-         access_token_encrypted, refresh_token_encrypted,
-         token_expires_at, scope, status, last_synced_at,
+  SELECT id, user_id, university_id, provider_id, base_url,
+         access_token_encrypted, status, last_synced_at,
          created_at, updated_at
     FROM lms_connections
 `;
@@ -141,50 +136,67 @@ async function readJson(request: Request): Promise<unknown> {
   }
 }
 
-/** Decrypt a connection row's access token (and, when present, refresh
- *  token) and reshape into the substrate `LmsConnection` the provider
- *  methods accept. The plaintext lives only in the returned object's
- *  closure for the duration of the route handler — never logged,
- *  never returned to the SPA, never rewritten to D1. */
+/** Decrypt a connection row's access token (PAT) and reshape into the
+ *  substrate `LmsConnection` the provider methods accept. The plaintext
+ *  lives only in the returned object's closure for the duration of the
+ *  route handler — never logged, never returned to the SPA, never
+ *  rewritten to D1. */
 async function rowToLmsConnection(
   ctx: RequestContext,
   row: ConnectionRow,
 ): Promise<LmsConnection> {
-  if (!row.access_token_encrypted) {
-    throw new Error(
-      "lms_connection_missing_access_token: row exists but has no encrypted access token; reconnect required.",
-    );
-  }
   const accessToken = await decryptForUniversity(
     ctx.env,
     row.access_token_encrypted,
     row.university_id,
   );
-  const refreshToken = row.refresh_token_encrypted
-    ? await decryptForUniversity(
-        ctx.env,
-        row.refresh_token_encrypted,
-        row.university_id,
-      )
-    : null;
   return {
     id: row.id,
     user_id: row.user_id,
     university_id: row.university_id,
     provider_id: row.provider_id,
-    auth_method: row.auth_method,
     base_url: row.base_url,
     access_token: accessToken,
-    refresh_token: refreshToken,
-    token_expires_at:
-      (row.token_expires_at ?? null) as LmsConnection["token_expires_at"],
-    scope: row.scope,
     status: row.status,
     last_synced_at:
       (row.last_synced_at ?? null) as LmsConnection["last_synced_at"],
     created_at: row.created_at as LmsConnection["created_at"],
     updated_at: row.updated_at as LmsConnection["updated_at"],
   };
+}
+
+/** Mark the connection row `expired` after a 401 from Canvas. The user
+ *  re-pastes a fresh PAT in /app/integrations to recover; we keep the
+ *  row (and metadata like `last_synced_at`) so the UI shows the prior
+ *  state alongside the "Expired" badge. */
+async function markConnectionExpired(
+  ctx: RequestContext,
+  connectionId: string,
+): Promise<void> {
+  try {
+    await execute(
+      ctx.env.DB,
+      `UPDATE lms_connections
+          SET status = 'expired', updated_at = ?
+        WHERE id = ?`,
+      [new Date().toISOString(), connectionId],
+    );
+  } catch (cause) {
+    console.warn("lms_connection_expire_write_failed", {
+      connection_id: connectionId,
+      cause,
+    });
+  }
+}
+
+/** Detect 401-from-Canvas in a thrown error chain. We accept either
+ *  `CanvasApiError` shape (the api.ts helpers throw this directly) or
+ *  a duck-typed `{ status: 401 }` wrapper (the reconciliation engine
+ *  surfaces error rows that the runner wraps). */
+function isCanvasUnauthorized(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const status = (err as { status?: unknown }).status;
+  return status === 401;
 }
 
 /** Look up an active connection by id and confirm the caller owns it.
@@ -369,6 +381,14 @@ export async function handleListLmsConnectionTerms(
       provider: connRow.provider_id,
       cause,
     });
+    if (isCanvasUnauthorized(cause)) {
+      await markConnectionExpired(ctx, connRow.id);
+      return errorResponse(
+        401,
+        "lms_token_expired",
+        "Your Canvas access token has been revoked or expired. Re-paste a new one in /app/integrations and try again.",
+      );
+    }
     return errorResponse(
       502,
       "lms_upstream_error",
@@ -443,6 +463,14 @@ export async function handleLmsSyncRunPreview(
     courses = await provider.listMyCourses(connection, input.term_id);
   } catch (cause) {
     console.error("lms_preview_courses_failed", { cause });
+    if (isCanvasUnauthorized(cause)) {
+      await markConnectionExpired(ctx, connRow.id);
+      return errorResponse(
+        401,
+        "lms_token_expired",
+        "Your Canvas access token has been revoked or expired. Re-paste a new one in /app/integrations and try again.",
+      );
+    }
     return errorResponse(
       502,
       "lms_upstream_error",
@@ -901,6 +929,12 @@ async function runReconciliationForRun(
       cause instanceof Error
         ? cause.message
         : "Reconciliation runner failed before completing.";
+    // 401-from-Canvas during the runner means the user's PAT was
+    // revoked or rotated mid-flight. Flip the connection to `expired`
+    // so the UI surfaces the "re-paste a new token" copy on next load.
+    if (isCanvasUnauthorized(cause)) {
+      await markConnectionExpired(ctx, input.connectionId);
+    }
     await markRunFailed(ctx, input.syncRunId, input.termName, [
       { scope: "connection", message },
     ]);

@@ -1,28 +1,26 @@
 // /app/onboarding/lms — post-MFA "Connect your Learning Management System"
-// step (UNI-57).
+// step (UNI-57; reshaped in UNI-63 to use per-user Personal Access
+// Tokens instead of an OAuth callback round-trip).
 //
-// The page renders three states driven by `GET /api/onboarding/lms-step`
-// and the `?connected=canvas` / `?lms_error=...` query params the OAuth
-// callback bounces back with:
+// The page renders three states driven by `GET /api/onboarding/lms-step`:
 //
 //   1. `loading`      — initial fetch.
-//   2. `eligible`     — show=true. List enabled providers + Skip link.
-//   3. `connected`    — `?connected=canvas` is present in the URL.
+//   2. `eligible`     — show=true. List enabled providers with an
+//                       inline PAT entry per provider, plus a Skip link.
+//   3. `connected`    — local state set after a successful PAT save.
 //                       Render the "Connected — sync now or later" copy
 //                       with a Continue button that lands on the
 //                       integrations page.
 //   4. `ineligible`   — show=false. Auto-redirect to the role-default
-//                       dashboard (the SignInPage flow already handles
-//                       this transparently, but a deep-linked visit
-//                       should also bounce out cleanly).
+//                       dashboard.
 //
-// The Connect button reuses the same `startCanvasConnection` client as
-// the standing /app/integrations page. The only difference: we pass
-// `origin: 'onboarding'` so the OAuth callback redirects back here on
-// success, not to /app/integrations.
+// The Connect form reuses the same `connectCanvasConnection` client
+// as the standing /app/integrations page; the connect endpoint stamps
+// `users.lms_onboarding_dismissed_at` on success so a refresh after
+// connect will route the user out via `getOnboardingLmsStep`.
 
-import { useEffect, useMemo, useState } from "react";
-import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { Navigate, useNavigate } from "react-router-dom";
 import { CheckCircle2, GraduationCap, Link2, Loader2 } from "lucide-react";
 
 import type {
@@ -45,7 +43,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/use-toast";
 import { ApiClientError } from "@/lib/api";
 import { defaultDashboardForRole } from "@/lib/default-dashboard";
-import { startCanvasConnection } from "@/lib/lms-connections";
+import { connectCanvasConnection } from "@/lib/lms-connections";
 import {
   dismissOnboardingLmsStep,
   getOnboardingLmsStep,
@@ -54,55 +52,20 @@ import {
 type Phase =
   | { kind: "loading" }
   | { kind: "eligible"; providers: LmsEnabledProvider[] }
+  | { kind: "connected" }
   | { kind: "ineligible" }
   | { kind: "error"; message: string };
 
 export function OnboardingLmsPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
   const [pendingProvider, setPendingProvider] = useState<LmsProviderId | null>(
     null,
   );
   const [skipping, setSkipping] = useState(false);
 
-  const connectedFromCallback = searchParams.get("connected") === "canvas";
-  const lmsError = searchParams.get("lms_error");
-  const errorDetail = searchParams.get("detail");
-
-  // Bounce the lms_error query param to a destructive toast and strip it
-  // off the URL so a refresh doesn't re-trigger. Same pattern as
-  // /app/integrations — keep behavior identical so the user doesn't see
-  // a different shape of failure on the onboarding page.
   useEffect(() => {
-    if (!lmsError) return;
-    toast({
-      title: "Couldn't complete the Canvas connection",
-      description: errorDetail
-        ? `Canvas reported: ${errorDetail}`
-        : "Please try again from /app/integrations.",
-      variant: "destructive",
-    });
-    const next = new URLSearchParams(searchParams);
-    next.delete("lms_error");
-    next.delete("detail");
-    setSearchParams(next, { replace: true });
-  }, [lmsError, errorDetail, searchParams, setSearchParams]);
-
-  // The success-side query param is consumed by the connected branch
-  // below; we don't strip it eagerly so the SyncNowOrLaterStep can read
-  // the same value. Refreshing the page after dismiss / continue will
-  // re-run getOnboardingLmsStep (which now returns show=false) and
-  // route the user out cleanly.
-  useEffect(() => {
-    if (connectedFromCallback) {
-      // No need to fetch — `lms_onboarding_dismissed_at` is already
-      // stamped server-side on the callback path, so a fetch would just
-      // return show=false. Stay on the connected step until the user
-      // clicks Continue.
-      return;
-    }
     const controller = new AbortController();
     setPhase({ kind: "loading" });
     getOnboardingLmsStep(controller.signal)
@@ -133,7 +96,7 @@ export function OnboardingLmsPage() {
         });
       });
     return () => controller.abort();
-  }, [connectedFromCallback]);
+  }, []);
 
   const dashboardTarget = useMemo(
     () => (user ? defaultDashboardForRole(user.role) : "/app/dashboard"),
@@ -144,24 +107,31 @@ export function OnboardingLmsPage() {
     return <Navigate to={dashboardTarget} replace />;
   }
 
-  async function handleConnect(entry: LmsEnabledProvider) {
+  async function handleConnect(
+    entry: LmsEnabledProvider,
+    personalAccessToken: string,
+  ) {
     setPendingProvider(entry.provider_id);
     try {
-      const res = await startCanvasConnection({
-        purpose: `University Hub for ${entry.display_name} sync`,
-        origin: "onboarding",
+      await connectCanvasConnection({
+        personal_access_token: personalAccessToken,
       });
-      window.location.href = res.authorize_url;
-    } catch (cause) {
-      setPendingProvider(null);
       toast({
-        title: `Couldn't start the ${entry.display_name} connect flow`,
+        title: `${entry.display_name} connected`,
+        variant: "success",
+      });
+      setPhase({ kind: "connected" });
+    } catch (cause) {
+      toast({
+        title: `Couldn't save your ${entry.display_name} access token`,
         description:
           cause instanceof ApiClientError
             ? cause.message
             : "Please try again.",
         variant: "destructive",
       });
+    } finally {
+      setPendingProvider(null);
     }
   }
 
@@ -179,9 +149,7 @@ export function OnboardingLmsPage() {
       toast({
         title: "Couldn't skip — please try again",
         description:
-          cause instanceof ApiClientError
-            ? cause.message
-            : undefined,
+          cause instanceof ApiClientError ? cause.message : undefined,
         variant: "destructive",
       });
     }
@@ -201,11 +169,9 @@ export function OnboardingLmsPage() {
         </p>
       </header>
 
-      {connectedFromCallback ? (
+      {phase.kind === "connected" ? (
         <ConnectedStep
-          onContinue={() =>
-            navigate("/app/integrations", { replace: true })
-          }
+          onContinue={() => navigate("/app/integrations", { replace: true })}
           onSkipToDashboard={() => navigate(dashboardTarget, { replace: true })}
         />
       ) : phase.kind === "loading" ? (
@@ -254,7 +220,10 @@ function ConnectStep({
   providers: LmsEnabledProvider[];
   pendingProvider: LmsProviderId | null;
   skipping: boolean;
-  onConnect: (entry: LmsEnabledProvider) => void;
+  onConnect: (
+    entry: LmsEnabledProvider,
+    personalAccessToken: string,
+  ) => Promise<void>;
   onSkip: () => void;
 }) {
   return (
@@ -265,42 +234,27 @@ function ConnectStep({
           <CardTitle>Connect your Learning Management System</CardTitle>
         </div>
         <CardDescription>
-          Bring your courses and students into University Hub by connecting
-          your Canvas account. You can also skip this and connect later from
-          the Integrations page.
+          Generate a Personal Access Token in Canvas (Account → Settings →
+          "+ New Access Token") and paste it below to bring your courses and
+          students into University Hub. You can also skip this and connect
+          later from the Integrations page.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <ul className="space-y-3">
-          {providers.map((entry) => {
-            const busy = pendingProvider === entry.provider_id;
-            return (
-              <li
-                key={entry.provider_id}
-                className="flex items-center justify-between gap-3 rounded-md border bg-muted/30 px-4 py-3"
-              >
-                <div className="min-w-0">
-                  <p className="font-medium">{entry.display_name}</p>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {entry.base_url}
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={() => onConnect(entry)}
-                  disabled={busy || skipping}
-                >
-                  {busy ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <Link2 className="mr-2 h-4 w-4" />
-                  )}
-                  {busy ? "Redirecting…" : `Connect ${entry.display_name}`}
-                </Button>
-              </li>
-            );
-          })}
+          {providers.map((entry) => (
+            <li
+              key={entry.provider_id}
+              className="rounded-md border bg-muted/30 p-4"
+            >
+              <ProviderConnectForm
+                entry={entry}
+                busy={pendingProvider === entry.provider_id}
+                disabled={skipping || pendingProvider !== null}
+                onSubmit={(token) => onConnect(entry, token)}
+              />
+            </li>
+          ))}
         </ul>
         <div className="flex justify-center pt-1">
           <button
@@ -314,6 +268,77 @@ function ConnectStep({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function ProviderConnectForm({
+  entry,
+  busy,
+  disabled,
+  onSubmit,
+}: {
+  entry: LmsEnabledProvider;
+  busy: boolean;
+  disabled: boolean;
+  onSubmit: (personalAccessToken: string) => Promise<void>;
+}) {
+  const [pat, setPat] = useState("");
+  const tokenSettingsUrl = `${entry.base_url.replace(/\/+$/, "")}/profile/settings#access_tokens`;
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmed = pat.trim();
+    if (trimmed.length === 0) return;
+    await onSubmit(trimmed);
+    setPat("");
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3" noValidate>
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="font-medium">{entry.display_name}</p>
+        <p className="truncate font-mono text-xs text-muted-foreground">
+          {entry.base_url}
+        </p>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Generate a token at{" "}
+        <a
+          href={tokenSettingsUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="font-medium underline"
+        >
+          Account → Settings → Approved Integrations
+        </a>{" "}
+        and paste it here. We store it encrypted at rest.
+      </p>
+      <input
+        type="password"
+        autoComplete="off"
+        value={pat}
+        onChange={(event) => setPat(event.target.value)}
+        disabled={disabled || busy}
+        required
+        placeholder="Paste your Canvas access token"
+        className="w-full rounded-md border bg-background p-2 font-mono text-sm"
+        aria-label={`${entry.display_name} access token`}
+      />
+      <div className="flex justify-end">
+        <Button
+          type="submit"
+          size="sm"
+          disabled={disabled || busy || pat.trim().length === 0}
+        >
+          {busy ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          ) : (
+            <Link2 className="mr-2 h-4 w-4" />
+          )}
+          {busy ? "Validating…" : `Connect ${entry.display_name}`}
+        </Button>
+      </div>
+    </form>
   );
 }
 

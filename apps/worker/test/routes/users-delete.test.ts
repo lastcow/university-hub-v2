@@ -398,7 +398,6 @@ describe("DELETE /api/users/:id — cascade + anonymization", () => {
     expect(batchSql.some((s) => s.startsWith("DELETE FROM mfa_challenges"))).toBe(true);
     expect(batchSql.some((s) => s.startsWith("DELETE FROM trusted_devices"))).toBe(true);
     expect(batchSql.some((s) => s.startsWith("DELETE FROM lms_connections"))).toBe(true);
-    expect(batchSql.some((s) => s.startsWith("DELETE FROM lms_oauth_states"))).toBe(true);
     expect(batchSql.some((s) => s.startsWith("DELETE FROM parent_sessions"))).toBe(true);
     expect(batchSql.some((s) => s.startsWith("DELETE FROM parent_sign_in_tokens"))).toBe(true);
     // Soft-deletes / status flips

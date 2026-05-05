@@ -602,7 +602,6 @@ function buildDeleteCascade(input: DeleteCascadeInput): Array<{
     { sql: `DELETE FROM mfa_challenges WHERE user_id = ?`, params: [targetId] },
     { sql: `DELETE FROM trusted_devices WHERE user_id = ?`, params: [targetId] },
     { sql: `DELETE FROM lms_connections WHERE user_id = ?`, params: [targetId] },
-    { sql: `DELETE FROM lms_oauth_states WHERE user_id = ?`, params: [targetId] },
     // Parent-side credential rows are tied to the student via student_user_id.
     // Removing the user row would CASCADE these (FK ON DELETE CASCADE), but
     // we anonymize the user row instead, so explicitly clear them so a

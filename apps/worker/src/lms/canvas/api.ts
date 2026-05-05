@@ -51,15 +51,94 @@ import {
   CanvasApiError,
   type FetchLike,
   parseNextLink,
+  trimBaseUrl,
   USER_AGENT,
 } from "./http.js";
 
-function trimBaseUrl(baseUrl: string): string {
-  return baseUrl.replace(/\/+$/, "");
-}
-
 interface CanvasGetOptions {
   fetchImpl?: FetchLike;
+}
+
+/**
+ * Probe `<base_url>/api/v1/users/self` with the supplied PAT. Used both
+ * by the admin "validate-on-save" form (UNI-63 §4) and the user-facing
+ * connect flow (UNI-63 §5) to confirm that the (base_url, PAT) pair
+ * Canvas will accept before the connection row is written.
+ *
+ * Returns `{ ok: true, user_id, name? }` on a 200 response. Throws a
+ * `CanvasApiError` on any failure path; the route handler maps
+ * `status === 401` to the user-facing "invalid token" copy and
+ * everything else to a generic upstream-error response.
+ *
+ * The PAT is passed as `Authorization: Bearer <token>` exactly like
+ * every other Canvas REST call — `users/self` is the cheapest
+ * authenticated endpoint and confirms BOTH that the URL is a Canvas
+ * tenant AND that the PAT is valid for it.
+ */
+export async function validatePersonalAccessToken(
+  baseUrl: string,
+  personalAccessToken: string,
+  options: CanvasGetOptions = {},
+): Promise<{ external_user_id: string; name: string | null }> {
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const url = `${trimBaseUrl(baseUrl)}/api/v1/users/self`;
+  let response: Response;
+  try {
+    response = await fetchImpl(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${personalAccessToken}`,
+        "User-Agent": USER_AGENT,
+        Accept: "application/json",
+      },
+    });
+  } catch (cause) {
+    throw new CanvasApiError(
+      0,
+      "network_error",
+      `Canvas request to ${url} failed: ${cause instanceof Error ? cause.message : "unknown"}`,
+      { cause },
+    );
+  }
+
+  if (response.status === 401) {
+    throw new CanvasApiError(
+      401,
+      "unauthorized",
+      "Canvas rejected the supplied access token (HTTP 401).",
+    );
+  }
+  if (!response.ok) {
+    throw new CanvasApiError(
+      response.status,
+      "http_error",
+      `Canvas returned HTTP ${response.status} validating PAT.`,
+    );
+  }
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new CanvasApiError(
+      response.status,
+      "malformed_response",
+      "Canvas /users/self response was not valid JSON.",
+    );
+  }
+  const obj = isObject(body) ? body : {};
+  const id = obj.id;
+  if (id === undefined || id === null) {
+    throw new CanvasApiError(
+      response.status,
+      "malformed_response",
+      "Canvas /users/self response missing user id.",
+    );
+  }
+  return {
+    external_user_id: String(id),
+    name: typeof obj.name === "string" ? obj.name : null,
+  };
 }
 
 /**

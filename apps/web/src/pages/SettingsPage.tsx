@@ -2269,13 +2269,15 @@ export function SystemSettingsSection() {
 }
 
 // ---------------------------------------------------------------------------
-// LMS integrations (UNI-53)
+// LMS integrations (UNI-53; reshaped in UNI-63 to use per-user PATs)
 //
-// Per-provider OAuth client configuration. Visible only to super_admin /
-// university_admin (gated at the call site by `canEditUniversity` + the
-// endpoint's RBAC). The client secret is never returned by the API; we
-// rely on `has_client_secret` to render an "existing secret on file"
-// indicator and let an admin save without re-pasting the secret.
+// Per-(university, provider) tenant config. Visible only to super_admin
+// / university_admin (gated at the call site by `canEditUniversity` +
+// the endpoint's RBAC). UNI-63 dropped the OAuth client_id /
+// client_secret fields — admins now configure only the institution's
+// `base_url` and the enabled flag. An optional "Test connection"
+// field accepts an admin-supplied Canvas PAT that the Worker uses to
+// probe `<base_url>/api/v1/users/self`; the value is never stored.
 // ---------------------------------------------------------------------------
 
 interface LmsState {
@@ -2382,9 +2384,10 @@ function AdminLmsProvidersPanel() {
           <CardTitle>Integration setup (admin only)</CardTitle>
         </div>
         <CardDescription>
-          Configure Learning Management System (LMS) OAuth clients for your
-          university. Once a provider is configured and enabled, every user
-          can connect their account from the Integrations page above.
+          Configure your institution's Learning Management System (LMS)
+          tenant URL. Once a provider is enabled, every user can paste
+          their own Personal Access Token from the Integrations page
+          above to connect.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -2460,18 +2463,16 @@ function ProviderCard({
 }) {
   const existing = entry.config;
   const [baseUrl, setBaseUrl] = useState(existing?.base_url ?? "");
-  const [clientId, setClientId] = useState("");
-  const [clientSecret, setClientSecret] = useState("");
   const [enabled, setEnabled] = useState(existing?.enabled ?? true);
+  const [testPat, setTestPat] = useState("");
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Reset form when the registry entry changes (e.g. after a save).
   useEffect(() => {
     setBaseUrl(existing?.base_url ?? "");
-    setClientId("");
-    setClientSecret("");
     setEnabled(existing?.enabled ?? true);
+    setTestPat("");
     setError(null);
   }, [existing?.id, existing?.updated_at]);
 
@@ -2482,43 +2483,36 @@ function ProviderCard({
     // Client-side validation that mirrors the server's zod schema —
     // catches the common cases without a round-trip but the server is
     // still the source of truth.
+    const trimmedUrl = baseUrl.trim();
     let url: URL;
     try {
-      url = new URL(baseUrl.trim());
+      url = new URL(trimmedUrl);
     } catch {
-      setError("Base URL must be a valid https:// URL.");
+      setError("Base URL must be a valid https:// origin.");
       return;
     }
     if (url.protocol !== "https:") {
       setError("Base URL must use https://.");
       return;
     }
-    const trimmedClientId = clientId.trim() || existing?.client_id_last4;
-    if (!existing && (!clientId.trim() || clientId.trim().length === 0)) {
-      setError("Client ID is required.");
-      return;
-    }
-    if (!existing && clientSecret.trim().length === 0) {
-      setError("Client secret is required when configuring a provider for the first time.");
+    if (
+      (url.pathname !== "/" && url.pathname !== "") ||
+      url.search !== "" ||
+      url.hash !== ""
+    ) {
+      setError("Base URL must be the tenant origin only — no path or query.");
       return;
     }
 
+    const trimmedTestPat = testPat.trim();
     try {
       await onSave({
         provider_id: entry.provider_id,
-        base_url: baseUrl.trim(),
-        // On re-edit, allow leaving client_id blank to mean "no change".
-        // The server still needs the value, so we send the existing last-4
-        // back? No — we send the current input or, when blank on update,
-        // the user must paste the existing client_id. The form's
-        // placeholder reminds them. The server only requires non-empty.
-        client_id: clientId.trim().length > 0
-          ? clientId.trim()
-          : (trimmedClientId ?? ""),
-        client_secret: clientSecret.length > 0 ? clientSecret : "",
+        base_url: trimmedUrl,
         enabled,
+        ...(trimmedTestPat.length > 0 ? { test_pat: trimmedTestPat } : {}),
       });
-      setClientSecret("");
+      setTestPat("");
     } catch (cause) {
       setError(
         cause instanceof ApiClientError
@@ -2547,19 +2541,16 @@ function ProviderCard({
           {existing ? (
             <p className="text-xs text-muted-foreground">
               <span className="font-mono">{existing.base_url}</span>
-              {" · "}
-              client ID ending <span className="font-mono">{existing.client_id_last4}</span>
-              {existing.has_client_secret ? " · secret on file" : ""}
             </p>
           ) : (
             <p className="text-xs text-muted-foreground">
-              Configure OAuth credentials to enable this provider.
+              Set the institution's tenant URL to enable this provider.
             </p>
           )}
           {existing?.enabled ? (
             <p className="text-xs text-muted-foreground">
               Users can now connect via{" "}
-              <code className="font-mono">/app/integrations</code>.
+              <code className="font-mono">/app/integrations</code> by pasting their own access token.
             </p>
           ) : null}
         </div>
@@ -2616,48 +2607,28 @@ function ProviderCard({
               disabled={busy}
             />
             <p className="text-xs text-muted-foreground">
-              Must start with <code className="font-mono">https://</code>.
+              The Canvas tenant origin (e.g.{" "}
+              <code className="font-mono">https://frostburg.instructure.com</code>).
+              Must use <code className="font-mono">https://</code> with no path.
             </p>
           </div>
           <div className="space-y-1">
-            <Label htmlFor={`lms-${entry.provider_id}-client-id`}>
-              Client ID
+            <Label htmlFor={`lms-${entry.provider_id}-test-pat`}>
+              Test connection (optional)
             </Label>
             <Input
-              id={`lms-${entry.provider_id}-client-id`}
-              required={!existing}
-              placeholder={
-                existing
-                  ? `…${existing.client_id_last4} (paste full value to change)`
-                  : ""
-              }
-              value={clientId}
-              onChange={(e) => setClientId(e.target.value)}
-              disabled={busy}
-            />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor={`lms-${entry.provider_id}-client-secret`}>
-              Client secret
-            </Label>
-            <Input
-              id={`lms-${entry.provider_id}-client-secret`}
+              id={`lms-${entry.provider_id}-test-pat`}
               type="password"
               autoComplete="off"
-              required={!existing}
-              placeholder={
-                existing && existing.has_client_secret
-                  ? "leave blank to keep existing"
-                  : ""
-              }
-              value={clientSecret}
-              onChange={(e) => setClientSecret(e.target.value)}
+              placeholder="Paste a Canvas access token to validate the URL"
+              value={testPat}
+              onChange={(e) => setTestPat(e.target.value)}
               disabled={busy}
             />
             <p className="text-xs text-muted-foreground">
-              {existing && existing.has_client_secret
-                ? "Leave blank to keep the existing client secret. Paste a new value to rotate it."
-                : "The shared secret from your LMS OAuth client. Stored encrypted at rest."}
+              Used only to probe the URL with{" "}
+              <code className="font-mono">/api/v1/users/self</code> at save
+              time. The token is never stored.
             </p>
           </div>
           <label className="flex items-center gap-2 text-sm">

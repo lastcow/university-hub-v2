@@ -1,4 +1,5 @@
-// LMS provider abstraction (epic UNI-50 / sub-issue UNI-51).
+// LMS provider abstraction (epic UNI-50; reshaped in UNI-63 to drop
+// the OAuth refresh path).
 //
 // Every concrete provider (Canvas first in UNI-52; Blackboard / Moodle /
 // Google Classroom in Phase 3) implements this interface. The shape is
@@ -11,12 +12,15 @@
 //
 // The interface intentionally does NOT hold provider state. `connection`
 // is passed in on every call; storage of the row is the worker's job.
-// Refresh logic is exposed separately via `refreshToken` so the calling
-// code can decide when to invoke it (typically when `token_expires_at`
-// has elapsed) without each method silently mutating a row.
+//
+// UNI-63 dropped `refreshToken` from the surface. Canvas uses a per-
+// user Personal Access Token now — there is no refresh exchange. If a
+// future provider lands an OAuth-shaped flow, refresh will go through
+// a separate optional capability extension rather than reappearing
+// here, so PAT-only providers don't have to implement a no-op.
 //
 // Phase 1 is read-only by design (per the user's locked decision in the
-// epic). The five methods below are the entire surface — there is no
+// epic). The four methods below are the entire surface — there is no
 // `pushGrades`, `pushAssignment`, etc. here, and the `LmsProvider` type
 // must not grow one. Bidirectional providers come in Phase 4 as a
 // separate `LmsWriteProvider` extension that an LMS adapter opts into;
@@ -38,24 +42,19 @@ export interface LmsProvider {
   readonly id: LmsProviderId;
 
   /**
-   * Exchange OAuth credentials (or a PAT) for an authenticated
-   * connection. The returned `LmsConnection` carries plaintext tokens —
-   * the caller is responsible for field-encrypting them before they
-   * land in `lms_connections`.
+   * Validate user-supplied credentials against the provider and return
+   * an authenticated connection. The returned `LmsConnection` carries
+   * the plaintext access token — the caller is responsible for field-
+   * encrypting it before it lands in `lms_connections`.
+   *
+   * UNI-63: for Canvas, this probes `<base_url>/api/v1/users/self`
+   * with the supplied PAT before returning. A 401 throws so the
+   * caller can surface "invalid token" without persisting anything.
    */
   authenticate(
     creds: LmsAuthCredentials,
     providerConfig: LmsProviderConfig,
   ): Promise<LmsConnection>;
-
-  /**
-   * Refresh an expiring connection in-place. Returns a new
-   * `LmsConnection` carrying the rotated `access_token` and (where the
-   * provider supports it) a fresh `refresh_token`. Callers that get a
-   * 401 from the provider mid-call should retry once via this method
-   * before surfacing the failure to the user.
-   */
-  refreshToken(connection: LmsConnection): Promise<LmsConnection>;
 
   /** Provider-native term catalog for the user's tenant. */
   listTerms(connection: LmsConnection): Promise<LmsTerm[]>;

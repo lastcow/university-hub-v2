@@ -1,20 +1,21 @@
-// /app/integrations — user-facing LMS connect surface (UNI-54).
+// /app/integrations — user-facing LMS connect surface (UNI-54;
+// reshaped in UNI-63 to use per-user Personal Access Tokens).
 //
-// Any authenticated user can land here, but the Connect button only does
+// Any authenticated user can land here, but the Connect form only does
 // something useful when:
 //   1. Their university's admin has enabled the provider in Settings →
 //      Integrations (UNI-53), AND
-//   2. They haven't already connected (or their connection was revoked).
+//   2. They haven't already connected (or their connection expired).
 //
-// FERPA consent: the first time a user clicks Connect we show a modal
-// explaining what's imported, where it goes, and how to revoke. We
-// remember acknowledgment in `localStorage` keyed per-user so the modal
-// doesn't return on every connect attempt — and so a different user
-// signing in on the same browser still sees it once. This is a UX
-// nicety; the backend audit log + lms.connected row are the system of
-// record for "this user agreed to the disclosure".
+// FERPA consent: the first time a user opens the connect form we show
+// the disclosure inline — what's imported, where it goes, how to
+// revoke. The user pastes their Canvas PAT, the Worker validates it
+// against `/api/v1/users/self`, and the connection lands directly in
+// the same response (no OAuth callback round-trip). The backend audit
+// log + lms.connected row are the system of record for "this user
+// agreed to the disclosure".
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -36,7 +37,6 @@ import type {
   LmsSyncRunStatus,
 } from "@university-hub/shared";
 
-import { useAuth } from "@/auth/AuthContext";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -59,9 +59,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/use-toast";
 import { ApiClientError } from "@/lib/api";
 import {
+  connectCanvasConnection,
   disconnectLmsConnection,
   listLmsConnections,
-  startCanvasConnection,
 } from "@/lib/lms-connections";
 import { listEnabledLmsProviders } from "@/lib/lms-provider-configs";
 import {
@@ -85,7 +85,6 @@ const INITIAL_STATE: IntegrationsState = {
   connections: [],
 };
 
-const CONSENT_STORAGE_PREFIX = "uh.lms.consent.acknowledged.v1.";
 const SYNC_POLL_INTERVAL_MS = 2_000;
 const SYNC_HISTORY_DISPLAY_LIMIT = 10;
 const TERMINAL_SYNC_STATUSES: ReadonlyArray<LmsSyncRunStatus> = [
@@ -95,7 +94,6 @@ const TERMINAL_SYNC_STATUSES: ReadonlyArray<LmsSyncRunStatus> = [
 ];
 
 export function IntegrationsPage() {
-  const { user } = useAuth();
   const [state, setState] = useState<IntegrationsState>(INITIAL_STATE);
   const [searchParams, setSearchParams] = useSearchParams();
   const [pendingProvider, setPendingProvider] = useState<LmsProviderId | null>(
@@ -110,11 +108,6 @@ export function IntegrationsPage() {
   );
   const [historyState, setHistoryState] = useState<SyncHistoryState>(
     INITIAL_HISTORY_STATE,
-  );
-
-  const consentStorageKey = useMemo(
-    () => (user ? `${CONSENT_STORAGE_PREFIX}${user.id}` : null),
-    [user],
   );
 
   async function reload() {
@@ -174,11 +167,11 @@ export function IntegrationsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Surface the post-OAuth-callback toast and strip the query param so
-  // a refresh doesn't re-trigger the toast.
+  // The post-MFA onboarding flow (UNI-57) and post-connect handoffs
+  // can land here with `?connected=canvas` to surface a friendly toast.
+  // Strip the query param so a refresh doesn't re-trigger the toast.
   useEffect(() => {
     const connected = searchParams.get("connected");
-    const lmsError = searchParams.get("lms_error");
     if (connected) {
       toast({
         title: "Canvas connected",
@@ -188,83 +181,35 @@ export function IntegrationsPage() {
       const next = new URLSearchParams(searchParams);
       next.delete("connected");
       setSearchParams(next, { replace: true });
-      void reload();
-    } else if (lmsError) {
-      toast({
-        title: "Couldn't finish connecting",
-        description:
-          searchParams.get("detail") ||
-          "Canvas didn't complete the connection. Please try again.",
-        variant: "destructive",
-      });
-      const next = new URLSearchParams(searchParams);
-      next.delete("lms_error");
-      next.delete("detail");
-      setSearchParams(next, { replace: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function isConsentAcknowledged(): boolean {
-    if (!consentStorageKey) return false;
-    try {
-      return localStorage.getItem(consentStorageKey) === "1";
-    } catch {
-      return false;
-    }
-  }
-
-  function rememberConsent() {
-    if (!consentStorageKey) return;
-    try {
-      localStorage.setItem(consentStorageKey, "1");
-    } catch {
-      // localStorage may be unavailable (private mode, quota); that's
-      // OK — the worst case is the user sees the modal again next session.
-    }
-  }
-
-  function openConsent(entry: LmsEnabledProvider) {
+  function openConnect(entry: LmsEnabledProvider) {
     setConsentTarget(entry);
     setConsentAcknowledged(false);
     setConsentOpen(true);
   }
 
-  async function performConnect(entry: LmsEnabledProvider) {
+  async function onConnectSubmit(personalAccessToken: string): Promise<void> {
+    if (!consentTarget) return;
+    const entry = consentTarget;
     setPendingProvider(entry.provider_id);
     try {
-      const res = await startCanvasConnection({
-        purpose: `University Hub for ${entry.display_name} sync`,
+      await connectCanvasConnection({
+        personal_access_token: personalAccessToken,
       });
-      window.location.href = res.authorize_url;
-    } catch (cause) {
-      setPendingProvider(null);
       toast({
-        title: "Couldn't start the Canvas connect flow",
-        description:
-          cause instanceof ApiClientError
-            ? cause.message
-            : "Please try again.",
-        variant: "destructive",
+        title: `${entry.display_name} connected`,
+        description: "We can now sync your courses and rosters from this page.",
+        variant: "success",
       });
+      setConsentOpen(false);
+      setConsentTarget(null);
+      await reload();
+    } finally {
+      setPendingProvider(null);
     }
-  }
-
-  function onConnectClick(entry: LmsEnabledProvider) {
-    if (isConsentAcknowledged()) {
-      void performConnect(entry);
-      return;
-    }
-    openConsent(entry);
-  }
-
-  function onConsentConfirm() {
-    if (!consentAcknowledged || !consentTarget) return;
-    rememberConsent();
-    setConsentOpen(false);
-    const target = consentTarget;
-    setConsentTarget(null);
-    void performConnect(target);
   }
 
   async function onDisconnect(connection: LmsConnectionPublic) {
@@ -298,7 +243,7 @@ export function IntegrationsPage() {
   }
 
   // Visible providers: prefer the admin's enabled set, but always show
-  // any provider the user has an active connection for so they can
+  // any provider the user has a stored connection for so they can
   // disconnect even after the admin disabled the provider.
   const visibleProviders = useMemo(() => {
     return composeProviderList(state.providers, state.connections);
@@ -336,7 +281,7 @@ export function IntegrationsPage() {
               entry={entry}
               connection={connection}
               busy={pendingProvider === entry.provider_id}
-              onConnect={() => onConnectClick(entry)}
+              onConnect={() => openConnect(entry)}
               onDisconnect={() => connection && onDisconnect(connection)}
               onSyncNow={() => connection && setSyncTarget(connection)}
             />
@@ -344,12 +289,15 @@ export function IntegrationsPage() {
         </div>
       )}
 
-      <ConsentModal
+      <ConnectPatModal
         open={consentOpen}
         target={consentTarget}
+        busy={
+          consentTarget !== null && pendingProvider === consentTarget.provider_id
+        }
         acknowledged={consentAcknowledged}
         onAcknowledgedChange={setConsentAcknowledged}
-        onConfirm={onConsentConfirm}
+        onSubmit={onConnectSubmit}
         onCancel={() => {
           setConsentOpen(false);
           setConsentTarget(null);
@@ -393,12 +341,9 @@ function composeProviderList(
   const out: VisibleProvider[] = providers.map((entry) => ({
     entry,
     connection:
-      connections.find(
-        (c) => c.provider_id === entry.provider_id && c.status !== "revoked",
-      ) ?? null,
+      connections.find((c) => c.provider_id === entry.provider_id) ?? null,
   }));
   for (const conn of connections) {
-    if (conn.status === "revoked") continue;
     if (byProvider.has(conn.provider_id)) continue;
     out.push({
       entry: {
@@ -549,8 +494,8 @@ function ConnectedState({ connection }: { connection: LmsConnectionPublic }) {
   return (
     <dl className="grid grid-cols-1 gap-1 text-xs text-muted-foreground sm:grid-cols-2">
       <div>
-        <dt className="font-medium text-foreground">Auth method</dt>
-        <dd>{connection.auth_method === "pat" ? "Personal Access Token" : "OAuth"}</dd>
+        <dt className="font-medium text-foreground">Tenant URL</dt>
+        <dd className="truncate font-mono">{connection.base_url}</dd>
       </div>
       <div>
         <dt className="font-medium text-foreground">Last synced</dt>
@@ -564,26 +509,61 @@ function ConnectedState({ connection }: { connection: LmsConnectionPublic }) {
   );
 }
 
-function ConsentModal({
+function ConnectPatModal({
   open,
   target,
+  busy,
   acknowledged,
   onAcknowledgedChange,
-  onConfirm,
+  onSubmit,
   onCancel,
 }: {
   open: boolean;
   target: LmsEnabledProvider | null;
+  busy: boolean;
   acknowledged: boolean;
   onAcknowledgedChange: (next: boolean) => void;
-  onConfirm: () => void;
+  onSubmit: (personalAccessToken: string) => Promise<void>;
   onCancel: () => void;
 }) {
+  const [pat, setPat] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  // Reset the form whenever the modal target changes (e.g. user picked
+  // a different provider) or the modal closes.
+  useEffect(() => {
+    if (!open) {
+      setPat("");
+      setError(null);
+    }
+  }, [open, target?.provider_id]);
+
+  const tokenSettingsUrl = target ? `${target.base_url.replace(/\/+$/, "")}/profile/settings#access_tokens` : null;
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    const trimmed = pat.trim();
+    if (trimmed.length === 0) {
+      setError("Paste your Canvas access token to continue.");
+      return;
+    }
+    try {
+      await onSubmit(trimmed);
+    } catch (cause) {
+      setError(
+        cause instanceof ApiClientError
+          ? cause.message
+          : "Couldn't save the access token. Please try again.",
+      );
+    }
+  }
+
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) onCancel();
+        if (!next && !busy) onCancel();
       }}
     >
       <DialogContent>
@@ -595,84 +575,133 @@ function ConsentModal({
             </DialogTitle>
           </div>
           <DialogDescription>
-            Before you authorize, please review what University Hub will read
-            from {target?.display_name ?? "your LMS"} and how that data is
-            handled. This disclosure complies with FERPA's record-of-access
-            requirements.
+            Generate a Personal Access Token in {target?.display_name ?? "your LMS"} and paste it
+            below. We store the token encrypted at rest and use it only to
+            sync your courses and rosters.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 text-sm">
+        <form onSubmit={handleSubmit} className="space-y-4 text-sm" noValidate>
           <section>
-            <h3 className="font-semibold text-foreground">What we import</h3>
-            <ul className="mt-1 list-disc space-y-1 pl-5 text-muted-foreground">
+            <h3 className="font-semibold text-foreground">How to generate the token</h3>
+            <ol className="mt-1 list-decimal space-y-1 pl-5 text-muted-foreground">
               <li>
-                Your courses for the term you select (course code, name,
-                description).
+                Sign in to your Canvas account at{" "}
+                <span className="font-mono">{target?.base_url ?? "your Canvas URL"}</span>.
               </li>
               <li>
-                Enrollments in those courses — students, teachers, and
-                teacher-assistants.
+                Go to{" "}
+                {tokenSettingsUrl ? (
+                  <a
+                    href={tokenSettingsUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-medium underline"
+                  >
+                    Account → Settings → Approved Integrations
+                  </a>
+                ) : (
+                  "Account → Settings → Approved Integrations"
+                )}
+                {" "}and click <strong>+ New Access Token</strong>.
               </li>
               <li>
-                Basic profile fields for those people: name, email,
-                LMS-assigned ID. We do not import grades, assignments, or
-                course content.
+                Set a purpose like "University Hub" and copy the token
+                Canvas displays exactly once.
+              </li>
+            </ol>
+          </section>
+
+          <section className="space-y-1">
+            <label htmlFor="lms-pat" className="font-medium text-foreground">
+              Canvas access token
+            </label>
+            <input
+              id="lms-pat"
+              type="password"
+              autoComplete="off"
+              value={pat}
+              onChange={(event) => setPat(event.target.value)}
+              disabled={busy}
+              required
+              className="w-full rounded-md border bg-background p-2 font-mono text-sm"
+              placeholder="Paste your token here"
+            />
+            <p className="text-xs text-muted-foreground">
+              Stored encrypted at rest, only the Worker decrypts it for
+              outbound Canvas calls.
+            </p>
+          </section>
+
+          <section className="space-y-2 rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <p className="font-medium text-foreground">What we import</p>
+            <ul className="list-disc space-y-0.5 pl-5">
+              <li>Your courses for the term you select.</li>
+              <li>Enrollments in those courses — students, teachers, and TAs.</li>
+              <li>
+                Basic profile fields (name, email, LMS-assigned ID) for those
+                people. We do not import grades, assignments, or course content.
               </li>
             </ul>
-          </section>
-
-          <section>
-            <h3 className="font-semibold text-foreground">Where it goes</h3>
-            <p className="text-muted-foreground">
-              Imported data is stored in this University Hub instance only.
-              It is not shared with any third party and is scoped to your
-              university tenant.
+            <p className="font-medium text-foreground">How to revoke</p>
+            <p>
+              Click Disconnect on this page at any time. We immediately delete
+              the stored token; you can also revoke the token directly from
+              Canvas's Approved Integrations page.
             </p>
           </section>
 
-          <section>
-            <h3 className="font-semibold text-foreground">How to revoke</h3>
-            <p className="text-muted-foreground">
-              You can disconnect at any time from this page. We immediately
-              clear the stored access tokens; your imported rows remain so
-              that grades and analytics continue to work, but no further
-              syncs run until you reconnect.
-            </p>
-          </section>
-        </div>
-
-        <label
-          htmlFor="lms-consent-ack"
-          className="flex items-start gap-2 rounded-md border bg-muted/30 p-3 text-sm"
-        >
-          <input
-            id="lms-consent-ack"
-            type="checkbox"
-            className="mt-0.5 h-4 w-4 rounded border-input"
-            checked={acknowledged}
-            onChange={(event) => onAcknowledgedChange(event.target.checked)}
-          />
-          <span>
-            I understand what data University Hub will import from{" "}
-            {target?.display_name ?? "my LMS"} and how to revoke this
-            connection.
-          </span>
-        </label>
-
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={onCancel}>
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            disabled={!acknowledged}
-            onClick={onConfirm}
+          <label
+            htmlFor="lms-consent-ack"
+            className="flex items-start gap-2 rounded-md border bg-muted/30 p-3 text-sm"
           >
-            <CheckCircle2 className="mr-2 h-4 w-4" />
-            Continue to {target?.display_name ?? "LMS"}
-          </Button>
-        </DialogFooter>
+            <input
+              id="lms-consent-ack"
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 rounded border-input"
+              checked={acknowledged}
+              onChange={(event) => onAcknowledgedChange(event.target.checked)}
+              disabled={busy}
+            />
+            <span>
+              I understand what data University Hub will import from{" "}
+              {target?.display_name ?? "my LMS"} and how to revoke this
+              connection. This disclosure complies with FERPA's
+              record-of-access requirements.
+            </span>
+          </label>
+
+          {error ? (
+            <div
+              role="alert"
+              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            >
+              {error}
+            </div>
+          ) : null}
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onCancel}
+              disabled={busy}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={!acknowledged || busy || pat.trim().length === 0}
+            >
+              {busy ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <CheckCircle2 className="mr-2 h-4 w-4" />
+              )}
+              {busy ? "Validating…" : "Save and connect"}
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   );

@@ -1,4 +1,6 @@
-// Canvas LMS adapter entry-point (sub-issue UNI-52).
+// Canvas LMS adapter entry-point (sub-issue UNI-52; reshaped in UNI-63
+// to drop the OAuth helpers — Canvas now uses per-user Personal Access
+// Tokens).
 //
 // Importing this module registers the default `CanvasProvider` instance
 // on the process-wide `lmsProviderRegistry` (side-effect in
@@ -12,21 +14,14 @@ export {
   type CanvasProviderDeps,
 } from "./provider.js";
 export {
-  buildAuthorizeUrl,
-  exchangeCodeForTokens,
-  refreshAccessToken,
-  type CanvasTokenExchangeResult,
-  type CanvasTokenRefreshResult,
-} from "./oauth.js";
-export {
   listTerms,
   listMyCourses,
   listEnrollments,
   deriveTermsFromCourses,
+  validatePersonalAccessToken,
 } from "./api.js";
 export {
   CanvasApiError,
-  CanvasOAuthError,
   type FetchLike,
   USER_AGENT,
 } from "./http.js";

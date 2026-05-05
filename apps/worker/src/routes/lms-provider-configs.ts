@@ -1,4 +1,6 @@
-// LMS provider config admin surface (epic UNI-50 / sub-issue UNI-53).
+// LMS provider config admin surface (epic UNI-50 / sub-issue UNI-53;
+// reshaped in UNI-63 to drop the OAuth client fields — admins now
+// configure only the institution's `base_url` and the `enabled` flag).
 //
 //   GET    /api/lms/provider-configs       super_admin / university_admin —
 //                                          per-provider config rows for the
@@ -8,24 +10,19 @@
 //                                          the unconfigured ones.
 //   POST   /api/lms/provider-configs       create or update one provider's
 //                                          config for the caller's
-//                                          university.
+//                                          university. Optional `test_pat`
+//                                          probes `<base_url>/api/v1/users/self`
+//                                          before saving; the value is never
+//                                          stored.
 //   DELETE /api/lms/provider-configs/:id   remove one provider config row.
 //
 // All three endpoints are gated to `super_admin` (any university) and
 // `university_admin` (their own university only). Other roles get 403
-// before any work happens. Writes always go through the field-encryption
-// helper (apps/worker/src/crypto/field-encryption.ts) — D1 only ever sees
-// the ciphertext for `client_secret_encrypted`. The plaintext is required
-// in the request, used to encrypt, and then dropped on the floor; we
-// never log it, never return it, and never store it.
+// before any work happens.
 //
 // Audit:
 //   - lms.provider_config.updated  on every successful create-or-update
 //   - lms.provider_config.removed  on every successful delete
-// Both rows carry `provider_id`, `enabled` (post-write), and a
-// `secret_changed` boolean so post-incident review can tell whether a
-// credential rotation actually happened. The OAuth client secret never
-// appears in the audit row.
 
 import {
   type LmsEnabledProvider,
@@ -39,8 +36,9 @@ import {
 } from "@university-hub/shared";
 
 import type { UserRow } from "../auth/session.js";
-import { encryptForUniversity } from "../crypto/field-encryption.js";
 import { execute, queryAll, queryFirst, type Row } from "../db/index.js";
+import { validatePersonalAccessToken } from "../lms/canvas/api.js";
+import { CanvasApiError } from "../lms/canvas/http.js";
 import { lmsProviderRegistry } from "../lms/registry.js";
 import { requireAuth, type RequestContext } from "../middleware/auth.js";
 import { writeAuditLog } from "../services/audit.js";
@@ -63,8 +61,6 @@ interface ProviderConfigRow extends Row {
   university_id: string;
   provider_id: LmsProviderId;
   base_url: string;
-  client_id: string;
-  client_secret_encrypted: string;
   enabled: number;
   configured_by_user_id: string | null;
   configured_at: string;
@@ -72,8 +68,8 @@ interface ProviderConfigRow extends Row {
 }
 
 const SELECT_BASE = `
-  SELECT id, university_id, provider_id, base_url, client_id,
-         client_secret_encrypted, enabled, configured_by_user_id,
+  SELECT id, university_id, provider_id, base_url,
+         enabled, configured_by_user_id,
          configured_at, updated_at
     FROM lms_provider_configs
 `;
@@ -141,30 +137,12 @@ function resolveTargetUniversity(
   return { ok: true, universityId: actor.university_id };
 }
 
-/**
- * Last-4 mask of the configured client_id for the listing endpoint. The
- * full value never leaks back to the UI: the admin who configured the
- * integration already knows it; everyone else only needs enough to
- * recognise the row at a glance and rule out copy-paste typos.
- */
-function maskClientId(value: string): string {
-  const trimmed = value.trim();
-  if (trimmed.length <= 4) {
-    // Pad shorter ids so the UI always renders four characters; rarely
-    // hits in practice (real OAuth client ids are 40+ chars).
-    return trimmed.padStart(4, "•");
-  }
-  return trimmed.slice(-4);
-}
-
 function rowToPublic(row: ProviderConfigRow): LmsProviderConfigPublic {
   return {
     id: row.id,
     university_id: row.university_id,
     provider_id: row.provider_id,
     base_url: row.base_url,
-    client_id_last4: maskClientId(row.client_id),
-    has_client_secret: row.client_secret_encrypted.length > 0,
     enabled: row.enabled === 1,
     configured_by_user_id: row.configured_by_user_id,
     configured_at: row.configured_at,
@@ -270,16 +248,7 @@ export async function handleListLmsProviderConfigs(
 /**
  * Public, non-admin listing for the user-facing /app/integrations page
  * (UNI-54). Any authenticated user can call it; the response is scoped
- * to their own university and filtered to enabled rows only. The shape
- * is `LmsEnabledProvider[]` — provider_id, display_name, base_url —
- * with no admin-relevant fields (`client_id_last4`, `has_client_secret`,
- * `configured_by_user_id`, etc.).
- *
- * Why a separate endpoint rather than a query param on the admin
- * listing: the admin listing's response shape is a strict superset of
- * what the SPA needs and an explicit second endpoint keeps the type
- * contract obvious — non-admin callers literally cannot ask for
- * admin-only fields.
+ * to their own university and filtered to enabled rows only.
  */
 export async function handleListEnabledLmsProviders(
   ctx: RequestContext,
@@ -337,8 +306,35 @@ export async function handleUpsertLmsProviderConfig(
     );
   }
 
-  const { provider_id, base_url, client_id, client_secret, enabled } =
-    parsed.data;
+  const { provider_id, base_url, enabled, test_pat } = parsed.data;
+
+  // Optional probe: when the admin pastes a Canvas PAT into the
+  // "Test connection" field, validate that (base_url, PAT) is a live
+  // Canvas tenant before persisting. The PAT is never stored — it
+  // lives only for this call. A 401 from Canvas surfaces "invalid
+  // token"; everything else surfaces a generic upstream error.
+  if (test_pat && provider_id === "canvas") {
+    try {
+      await validatePersonalAccessToken(base_url, test_pat);
+    } catch (cause) {
+      if (cause instanceof CanvasApiError && cause.status === 401) {
+        return errorResponse(
+          400,
+          "invalid_token",
+          "Canvas rejected the test access token. Re-issue one in Canvas and try again.",
+        );
+      }
+      console.error("lms_provider_config_probe_failed", {
+        provider: provider_id,
+        cause,
+      });
+      return errorResponse(
+        502,
+        "lms_upstream_error",
+        "Couldn't reach Canvas to validate the base URL. Confirm the URL and try again.",
+      );
+    }
+  }
 
   const existing = await loadConfigByUniversityAndProvider(
     ctx.env.DB,
@@ -346,32 +342,7 @@ export async function handleUpsertLmsProviderConfig(
     provider_id,
   );
 
-  // Secret rules:
-  //   - first configure (no existing row): client_secret is required
-  //     and must be non-empty.
-  //   - re-edit: blank/missing client_secret keeps the existing
-  //     ciphertext; non-empty client_secret rotates it.
-  const newSecret = (client_secret ?? "").trim();
-  if (!existing && newSecret.length === 0) {
-    return errorResponse(
-      400,
-      "invalid_request",
-      "Client secret is required when configuring a provider for the first time.",
-      { issues: { client_secret: ["Client secret is required"] } },
-    );
-  }
-
   const now = new Date().toISOString();
-  let secretChanged = false;
-  let encryptedSecret = existing?.client_secret_encrypted ?? "";
-  if (newSecret.length > 0) {
-    encryptedSecret = await encryptForUniversity(
-      ctx.env,
-      newSecret,
-      target.universityId,
-    );
-    secretChanged = true;
-  }
   const enabledInt = enabled ? 1 : 0;
 
   let savedRow: ProviderConfigRow | null = null;
@@ -380,16 +351,12 @@ export async function handleUpsertLmsProviderConfig(
       ctx.env.DB,
       `UPDATE lms_provider_configs
           SET base_url = ?,
-              client_id = ?,
-              client_secret_encrypted = ?,
               enabled = ?,
               configured_by_user_id = ?,
               updated_at = ?
         WHERE id = ?`,
       [
         base_url,
-        client_id,
-        encryptedSecret,
         enabledInt,
         actor.id,
         now,
@@ -402,17 +369,15 @@ export async function handleUpsertLmsProviderConfig(
     await execute(
       ctx.env.DB,
       `INSERT INTO lms_provider_configs
-         (id, university_id, provider_id, base_url, client_id,
-          client_secret_encrypted, enabled, configured_by_user_id,
+         (id, university_id, provider_id, base_url,
+          enabled, configured_by_user_id,
           configured_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         target.universityId,
         provider_id,
         base_url,
-        client_id,
-        encryptedSecret,
         enabledInt,
         actor.id,
         now,
@@ -433,7 +398,7 @@ export async function handleUpsertLmsProviderConfig(
       base_url,
       enabled: enabledInt === 1,
       created: !existing,
-      secret_changed: secretChanged,
+      probed: Boolean(test_pat),
     },
   });
 
