@@ -43,6 +43,7 @@ const CONNECTION: LmsConnection = {
   user_id: "user-1" as never,
   university_id: "uni-1" as never,
   provider_id: "canvas",
+  auth_method: "oauth",
   base_url: "https://canvas.example.edu",
   access_token: "atk-fixture",
   refresh_token: "rtk-fixture",
@@ -94,6 +95,7 @@ describe("CanvasProvider.authenticate", () => {
       new Date(NOW.getTime() + fixture.expires_in * 1000).toISOString(),
     );
     expect(conn.status).toBe("active");
+    expect(conn.auth_method).toBe("oauth");
     // Caller (UNI-54) is responsible for assigning these:
     expect(conn.id).toBe("");
     expect(conn.user_id).toBe("");
@@ -101,11 +103,56 @@ describe("CanvasProvider.authenticate", () => {
     expect(conn.updated_at).toBe(NOW.toISOString());
   });
 
-  it("rejects when no authorization code is supplied (PAT fallback is Phase 2)", async () => {
+  it("returns a PAT-flavored connection when personal_access_token is supplied (no HTTP)", async () => {
+    // No fetch handlers — the PAT path must NOT hit the network.
+    const mock = mockFetch([]);
+    const NOW = new Date("2026-05-05T04:30:00Z");
+    const provider = new CanvasProvider({
+      fetchImpl: mock.fetchImpl,
+      now: () => NOW,
+    });
+
+    const conn = await provider.authenticate(
+      { personal_access_token: "canvas-pat-do-not-leak" },
+      PROVIDER_CONFIG,
+    );
+
+    expect(conn.auth_method).toBe("pat");
+    expect(conn.access_token).toBe("canvas-pat-do-not-leak");
+    expect(conn.refresh_token).toBeNull();
+    expect(conn.token_expires_at).toBeNull();
+    expect(conn.scope).toBeNull();
+    expect(conn.status).toBe("active");
+    expect(conn.provider_id).toBe("canvas");
+    expect(conn.base_url).toBe(PROVIDER_CONFIG.base_url);
+    expect(conn.university_id).toBe(PROVIDER_CONFIG.university_id);
+    expect(conn.created_at).toBe(NOW.toISOString());
+    expect(mock.calls).toHaveLength(0);
+  });
+
+  it("prefers PAT over OAuth code when both are supplied", async () => {
+    // If a caller (mistakenly) sends both, PAT wins — the OAuth dance
+    // would reach over the network unnecessarily otherwise.
+    const mock = mockFetch([]);
+    const provider = new CanvasProvider({ fetchImpl: mock.fetchImpl });
+    const conn = await provider.authenticate(
+      {
+        code: "ignored",
+        redirect_uri: "https://hub.example.com/cb",
+        personal_access_token: "pat-wins",
+      },
+      PROVIDER_CONFIG,
+    );
+    expect(conn.auth_method).toBe("pat");
+    expect(conn.access_token).toBe("pat-wins");
+    expect(mock.calls).toHaveLength(0);
+  });
+
+  it("rejects when no credentials of any kind are supplied", async () => {
     const provider = new CanvasProvider();
     await expect(
       provider.authenticate({}, PROVIDER_CONFIG),
-    ).rejects.toThrow(/authorization code/);
+    ).rejects.toThrow(/personal_access_token.*code.*redirect_uri/s);
   });
 });
 
@@ -160,6 +207,20 @@ describe("CanvasProvider.refreshToken", () => {
     await expect(
       provider.refreshToken({ ...CONNECTION, refresh_token: null }),
     ).rejects.toThrow(/refresh_token/);
+  });
+
+  it("rejects PAT connections — they don't refresh, the user re-pastes", async () => {
+    const provider = new CanvasProvider({
+      loadProviderConfig: async () => PROVIDER_CONFIG,
+    });
+    await expect(
+      provider.refreshToken({
+        ...CONNECTION,
+        auth_method: "pat",
+        refresh_token: null,
+        token_expires_at: null,
+      }),
+    ).rejects.toThrow(/PAT/);
   });
 });
 

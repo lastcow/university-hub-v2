@@ -90,11 +90,36 @@ export class CanvasProvider implements LmsProvider {
     creds: LmsAuthCredentials,
     providerConfig: LmsProviderConfig,
   ): Promise<LmsConnection> {
+    const nowIso = (this.deps.now?.() ?? new Date()).toISOString() as IsoDateString;
+
+    // PAT branch (UNI-51 PR #72 pulled this into Phase 1). When the user
+    // pastes a Canvas Personal Access Token from Account → Settings →
+    // New Access Token, we skip the OAuth dance entirely: the PAT IS
+    // the access token, there is no refresh path, and `auth_method`
+    // distinguishes the row at storage time so reconciliation /
+    // refresh-decision code knows not to attempt rotation.
+    if (creds.personal_access_token) {
+      return {
+        id: EMPTY_ID,
+        user_id: EMPTY_ID,
+        university_id: providerConfig.university_id,
+        provider_id: "canvas",
+        auth_method: "pat",
+        base_url: providerConfig.base_url,
+        access_token: creds.personal_access_token,
+        refresh_token: null,
+        token_expires_at: null,
+        scope: null,
+        status: "active",
+        last_synced_at: null,
+        created_at: nowIso,
+        updated_at: nowIso,
+      };
+    }
+
     if (!creds.code || !creds.redirect_uri) {
-      // PAT fallback is Phase 2; in Phase 1 we strictly require the
-      // OAuth Authorization Code grant.
       throw new Error(
-        "CanvasProvider.authenticate requires an authorization code and redirect_uri (PAT fallback is a Phase 2 sub-issue).",
+        "CanvasProvider.authenticate requires either `personal_access_token` or both `code` and `redirect_uri`.",
       );
     }
     const tokens = await exchangeCodeForTokens(
@@ -103,12 +128,12 @@ export class CanvasProvider implements LmsProvider {
       creds.redirect_uri,
       { fetchImpl: this.deps.fetchImpl, now: this.deps.now },
     );
-    const nowIso = (this.deps.now?.() ?? new Date()).toISOString() as IsoDateString;
     return {
       id: EMPTY_ID,
       user_id: EMPTY_ID,
       university_id: providerConfig.university_id,
       provider_id: "canvas",
+      auth_method: "oauth",
       base_url: providerConfig.base_url,
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
@@ -122,6 +147,11 @@ export class CanvasProvider implements LmsProvider {
   }
 
   async refreshToken(connection: LmsConnection): Promise<LmsConnection> {
+    if (connection.auth_method === "pat") {
+      throw new Error(
+        "CanvasProvider.refreshToken called on a PAT connection; PATs do not refresh — the user must re-paste a fresh token via /app/integrations.",
+      );
+    }
     if (!connection.refresh_token) {
       throw new Error(
         "CanvasProvider.refreshToken called on a connection without a refresh_token; reconnect is required.",

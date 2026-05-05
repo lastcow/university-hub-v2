@@ -162,23 +162,80 @@ Canvas allows multiple redirect URIs per developer key, so register
 each environment's URL up-front to avoid round-tripping through the key
 UI when switching between local and deployed Workers.
 
-## 7 — Out of scope (Phase 2 sub-issues)
+## 7 — Personal Access Token (PAT) setup
+
+PAT auth was pulled into Phase 1 (originally Phase 2) when the first
+customer's Canvas test target turned out to expose only a PAT — see
+`migrations/0016_lms_auth_method.sql` for the schema change that backs
+this. PAT users skip the entire OAuth dance: they paste a long-lived
+token from the Canvas UI, Hub stores it field-encrypted, and there is
+no refresh path (when the PAT expires, the user re-pastes a fresh one).
+
+### Mint a PAT in Canvas
+
+1. Sign in to Canvas as the instructor whose courses you want to sync.
+2. Open **Account → Settings**. Scroll to the **Approved Integrations**
+   section.
+3. Click **+ New Access Token**.
+4. Fill in:
+   - **Purpose**: e.g. `University Hub sync`. The free-text label is
+     surfaced in Canvas's Approved Integrations list so the user can
+     revoke the token later.
+   - **Expires**: leave blank for a non-expiring PAT, or set a date.
+     Canvas does not warn on or near expiry — set a date only if your
+     security policy mandates rotation, and remember to re-paste a
+     fresh PAT in Hub before then.
+5. Click **Generate Token**. Canvas reveals the PAT exactly once.
+
+### Connect via PAT in Hub
+
+1. Sign in as a `faculty` / `teacher` / `teacher_assistant` user and
+   visit `/app/integrations` (UNI-54).
+2. Choose **Connect with Personal Access Token** instead of the OAuth
+   button. Paste the PAT into the form and submit.
+3. The Worker's connect handler calls
+   `CanvasProvider.authenticate({ personal_access_token: <pat> }, ...)`,
+   which short-circuits the OAuth dance and returns an `LmsConnection`
+   with:
+   - `auth_method: 'pat'`
+   - `access_token: <pat>` (field-encrypted at storage time)
+   - `refresh_token: null`
+   - `token_expires_at: null`
+   - `scope: null`
+4. Verify via D1:
+   ```sh
+   cd apps/worker && npx wrangler d1 execute DB --local --command \
+     "SELECT id, user_id, auth_method, status FROM lms_connections;"
+   ```
+   The new row should show `auth_method = 'pat'`.
+
+### When a PAT stops working
+
+The reconciliation engine treats a 401 from Canvas the same way for
+both auth methods — it marks the connection `status = 'expired'` and
+surfaces a "reconnect" prompt in the UI. For an OAuth row the
+"reconnect" path attempts a refresh first; for a PAT row it
+unconditionally requires the user to paste a fresh token. The
+provider enforces this contract: `CanvasProvider.refreshToken` throws
+on a `auth_method = 'pat'` connection rather than silently no-op'ing,
+so callers cannot accidentally treat the absence of a refresh token
+as "all good".
+
+## 8 — Out of scope (Phase 2 sub-issues)
 
 The Phase 1 Canvas adapter intentionally omits:
 
-- **Personal Access Token fallback.** A Canvas instance that doesn't
-  expose developer-key creation to the customer admin would benefit
-  from a PAT entry surface. Tracked separately in Phase 2.
 - **Token-refresh edge cases.** The adapter handles the happy-path
   refresh exchange (`refreshAccessToken`); error-recovery paths
   (revoked tokens, refresh-token expiry, partial response) get
-  hardened in Phase 2.
+  hardened in Phase 2. PAT happy-path is in Phase 1 (§7); PAT
+  expiry-detection improvements are Phase 2.
 - **Rate-limit retries.** A 429 response surfaces as a sync error;
   exponential backoff + queued retry is Phase 2.
 - **Background scheduled sync.** Today's flow is on-demand only. A
   cron-driven background sync is Phase 2.
 
-## 8 — Token storage and rotation
+## 9 — Token storage and rotation
 
 Tokens never sit in plaintext in D1. `lms_provider_configs.client_secret_encrypted`,
 `lms_connections.access_token_encrypted`, and
@@ -186,7 +243,7 @@ Tokens never sit in plaintext in D1. `lms_provider_configs.client_secret_encrypt
 per-tenant AES-GCM helper in `apps/worker/src/crypto/field-encryption.ts`.
 Master-key rotation procedure: see `docs/encryption.md`.
 
-## 9 — Test fixtures
+## 10 — Test fixtures
 
 The Canvas adapter is unit-tested with `fetch` mocked. Sample Canvas
 JSON responses live at `apps/worker/test/lms/canvas/fixtures/`:
