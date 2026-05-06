@@ -28,6 +28,7 @@ import type {
 
 import {
   deleteTrustedDeviceById,
+  isFingerprintOnlyTokenHash,
   listTrustedDevicesForUser,
   revokeAllTrustedDevicesForUser,
   type TrustedDeviceRow,
@@ -59,11 +60,13 @@ function rowToListItem(row: TrustedDeviceRow): TrustedDeviceListItem {
     last_used_at: row.last_used_at,
     last_mfa_at: row.last_mfa_at,
     last_seen_at: row.last_seen_at,
-    // Fingerprint-only rows (UNI-49) carry an empty string in token_hash
-    // because they were never minted with a cookie. The UI uses this to
-    // distinguish "this device was just remembered" rows from the older
-    // UNI-47 cookie-bypass rows.
-    fingerprint_only: row.token_hash === "",
+    // Fingerprint-only rows (UNI-49) carry a sentinel in token_hash
+    // because they were never minted with a cookie. UNI-69 switched the
+    // sentinel from `""` (which violated the column's UNIQUE constraint
+    // when more than one such row existed) to `fp_only:<uuid>`; both
+    // shapes are recognised here so legacy rows still surface correctly
+    // to the UI.
+    fingerprint_only: isFingerprintOnlyTokenHash(row.token_hash),
   };
 }
 
