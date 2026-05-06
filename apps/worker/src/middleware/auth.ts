@@ -1,6 +1,22 @@
-// Auth middleware. Reads the session cookie, resolves it against the DB, and
-// returns the resolved user (or null when missing/expired). Route handlers
-// build a per-request context that includes this result.
+// Auth middleware. Reads the session token from either the
+// `Authorization: Bearer <token>` request header (UNI-70) or the
+// `university_hub_session` cookie, resolves it against the DB, and returns
+// the resolved user (or null when missing/expired). Route handlers build a
+// per-request context that includes this result.
+//
+// Why two transports (UNI-70): in production the SPA is on `*.pages.dev`
+// and the Worker is on `*.workers.dev` — separate eTLD+1's, so every
+// request from the SPA is third-party. Privacy-strict browsers (Safari
+// ITP, Firefox total cookie protection, Brave, Chrome with 3p cookies
+// blocked) silently drop the cross-site `Set-Cookie`, which used to leave
+// users authenticated server-side but unauthenticated client-side and
+// surfaced as "Authentication required" on every protected page. The SPA
+// now persists the raw token returned in the sign-in / MFA-verify response
+// body and sends it back as `Authorization: Bearer <token>`. The cookie
+// path is preserved as defense in depth for browsers that allow it. UNI-68
+// solved the same problem on the short-lived MFA challenge token via
+// `X-Mfa-Challenge-Token`; this is the same pattern applied to the
+// long-lived session.
 //
 // Session lifecycle (UNI-26): every authenticated request is also a
 // liveness signal. Before handing the session to handlers, the middleware:
@@ -61,8 +77,7 @@ export async function buildContext(
 ): Promise<RequestContext> {
   const url = new URL(request.url);
   const cookies = parseCookies(request.headers.get("cookie"));
-  const cookieName = env.SESSION_COOKIE_NAME || "university_hub_session";
-  const token = cookies[cookieName];
+  const token = getSessionToken(request, cookies, env);
   let auth: AuthState | null = null;
   if (token) {
     const resolved = await resolveSessionByToken(env, token);
@@ -119,6 +134,40 @@ export function sessionTimeoutReason(
     return "absolute_timeout";
   }
   return null;
+}
+
+/**
+ * UNI-70: pull the session token off the request, preferring the
+ * `Authorization: Bearer <token>` header over the
+ * `university_hub_session` cookie. Header-first means the SPA can keep
+ * authenticating in browsers that drop the cross-site Set-Cookie on the
+ * Pages → Worker hop; the cookie is preserved as defense in depth for
+ * browsers that allow it. The header value is the same opaque token the
+ * worker mints on sign-in / MFA-verify (see `auth/session.ts`); it is
+ * never sent on the bare `Cookie` channel.
+ *
+ * Exported so route handlers (notably `handleSignOut`) can resolve the
+ * caller's token by either transport without re-implementing the lookup.
+ */
+export function getSessionToken(
+  request: Request,
+  cookies: Record<string, string>,
+  env: Env,
+): string | null {
+  const authHeader = request.headers.get("authorization");
+  if (authHeader) {
+    // Be lenient on the scheme casing — RFC 7235 says it's
+    // case-insensitive ("Bearer", "bearer", "BEARER"). Reject anything
+    // else (Basic, Digest, etc.) so a stray Authorization header from a
+    // proxy doesn't accidentally resolve as a session.
+    const match = /^bearer\s+(.+)$/i.exec(authHeader.trim());
+    if (match && match[1]) {
+      const token = match[1].trim();
+      if (token.length > 0) return token;
+    }
+  }
+  const cookieName = env.SESSION_COOKIE_NAME || "university_hub_session";
+  return cookies[cookieName] ?? null;
 }
 
 export function requireAuth(ctx: RequestContext): AuthState | Response {

@@ -14,7 +14,11 @@ import type {
   SignInResponse,
 } from "@university-hub/shared";
 
-import { ApiClientError } from "@/lib/api";
+import {
+  ApiClientError,
+  clearStoredSessionToken,
+  setStoredSessionToken,
+} from "@/lib/api";
 import { fetchMe, signIn as apiSignIn, signOut as apiSignOut } from "@/lib/auth";
 
 export type AuthStatus = "loading" | "authenticated" | "unauthenticated";
@@ -70,6 +74,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signIn = useCallback(async (input: SignInInput) => {
     const next = await apiSignIn(input);
     if (next.status === "ok") {
+      // UNI-70: persist the bearer token before flipping auth state so
+      // any follow-up fetch (e.g. the AuthProvider's `refresh`) carries
+      // it. The cookie is also set on the response, but the SPA cannot
+      // see HttpOnly cookies and the cross-site browser may have
+      // dropped it anyway.
+      setStoredSessionToken(next.session_token);
       setUser(next.user);
       setStatus("authenticated");
     }
@@ -85,6 +95,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       await apiSignOut();
     } finally {
+      // UNI-70: drop the bearer token regardless of network outcome.
+      // Otherwise a failed sign-out leaves the SPA still authenticating
+      // the next request from this browser. The server-side row is
+      // already revoked by the time we reach this `finally`.
+      clearStoredSessionToken();
       setUser(null);
       setStatus("unauthenticated");
     }

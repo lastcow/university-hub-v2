@@ -25,7 +25,7 @@ import type { MfaEnrollResponse } from "@university-hub/shared";
 
 import { useAuth } from "@/auth/AuthContext";
 import { Button } from "@/components/ui/button";
-import { ApiClientError } from "@/lib/api";
+import { ApiClientError, setStoredSessionToken } from "@/lib/api";
 import { defaultDashboardForRole } from "@/lib/default-dashboard";
 import {
   startMfaEnrollment,
@@ -382,6 +382,12 @@ function MfaEnrollStep({
     setSubmitting(true);
     try {
       const verified = await verifyMfaEnrollment(code, challengeToken);
+      // UNI-70: persist the bearer token before flipping auth state so
+      // the immediate post-MFA fetches (`/api/auth/me`, dashboard
+      // summary, onboarding step) carry it. Browsers that block the
+      // cross-site session cookie would otherwise land the user on the
+      // dashboard and 401 every protected request.
+      setStoredSessionToken(verified.session_token);
       setSessionUser(verified.user);
       onVerified(verified.user.role);
     } catch (cause) {
@@ -570,6 +576,11 @@ function MfaChallengeStep({
           trustedDeviceEligible && !usingRecovery && rememberDevice,
         challengeToken,
       });
+      // UNI-70: persist the bearer token before flipping auth state.
+      // Same reasoning as the verify-enroll path — cross-site browsers
+      // drop the session cookie, so without the bearer the user lands
+      // on the dashboard and every protected fetch 401s.
+      setStoredSessionToken(verified.session_token);
       setSessionUser(verified.user);
       onVerified(verified.user.role);
     } catch (cause) {

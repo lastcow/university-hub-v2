@@ -14,9 +14,30 @@ import type { SessionUser } from "./user.js";
  * step works even when the browser blocks the cross-site cookie on the
  * Pages → Worker hop. The cookie remains as defense in depth for clients
  * that allow it.
+ *
+ * UNI-70: the long-lived session token is surfaced in `session_token` on
+ * the `ok` branch for the same reason. Browsers that drop the
+ * `university_hub_session` cross-site Set-Cookie would otherwise land the
+ * user on the dashboard and immediately 401 every protected API call. The
+ * SPA stores `session_token` and echoes it back on every subsequent
+ * `/api/*` request via `Authorization: Bearer <token>`. The cookie stays
+ * as defense in depth.
  */
 export type SignInResponse =
-  | { status: "ok"; user: SessionUser }
+  | {
+      status: "ok";
+      user: SessionUser;
+      /**
+       * UNI-70: opaque session token (same value as the
+       * `university_hub_session` HttpOnly cookie). The SPA persists this
+       * client-side and sends it back on every subsequent `/api/*`
+       * request as `Authorization: Bearer <token>` so authenticated
+       * traffic survives browsers that drop the cross-site session
+       * cookie on the Pages → Worker hop. The cookie ships in the same
+       * response as defense in depth.
+       */
+      session_token: string;
+    }
   | {
       status: "mfa_required";
       mfa_enrolled: boolean;
@@ -60,9 +81,16 @@ export interface MfaEnrollResponse {
   recovery_codes: string[];
 }
 
-/** Returned by `POST /api/auth/mfa/verify-enroll` and `/challenge` on success. */
+/**
+ * Returned by `POST /api/auth/mfa/verify-enroll` and `/challenge` on success.
+ *
+ * UNI-70: includes the raw session token so the SPA can keep authenticating
+ * via `Authorization: Bearer <token>` when the browser blocks the
+ * cross-site session cookie. See the longer note on `SignInResponse`.
+ */
 export interface MfaVerifyResponse {
   user: SessionUser;
+  session_token: string;
 }
 
 /**
