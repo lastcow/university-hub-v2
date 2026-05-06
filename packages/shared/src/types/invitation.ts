@@ -87,4 +87,12 @@ export interface InvitationAcceptResult {
    * flow.
    */
   trusted_device_eligible: boolean;
+  /**
+   * UNI-68: short-lived (5 min) MFA challenge token. Mirrors
+   * `SignInResponse.mfa_challenge_token` so the post-accept enrollment
+   * surface can pass it as `X-Mfa-Challenge-Token` on the follow-up
+   * `/api/auth/mfa/{enroll,verify-enroll}` calls without depending on
+   * the cross-site HttpOnly cookie surviving the Pages → Worker hop.
+   */
+  mfa_challenge_token: string;
 }

@@ -309,6 +309,13 @@ export async function handleSignIn(ctx: RequestContext): Promise<Response> {
         trusted_device_eligible: !roleAlwaysChallenges(user.role)
           ? true
           : user.role === "university_admin",
+        // UNI-68: surface the token in the body too so the SPA can echo
+        // it back via `X-Mfa-Challenge-Token` on the verify endpoints.
+        // Browsers that block third-party cookies on the Pages → Worker
+        // hop drop the matching `Set-Cookie` below; without the token in
+        // the body the verify step would always 401 with
+        // "Sign in again to complete MFA verification."
+        mfa_challenge_token: challenge.token,
       };
       return jsonOk(body, { headers: { "set-cookie": challenge.setCookie } });
     }

@@ -864,6 +864,11 @@ export async function handleAcceptInvitation(ctx: RequestContext): Promise<Respo
     trusted_device_eligible: !roleAlwaysChallenges(row.role)
       ? true
       : row.role === "university_admin",
+    // UNI-68: surface the token so AcceptInvitationPage can thread it
+    // through to SignInPage and onward to /api/auth/mfa/{enroll,
+    // verify-enroll} via the `X-Mfa-Challenge-Token` header. The cookie
+    // still ships below for browsers that allow it.
+    mfa_challenge_token: challenge.token,
   };
   return jsonOk(body, {
     status: 201,
