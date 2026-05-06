@@ -260,11 +260,14 @@ function makeFixture(seed: FixtureSeed = {}): Fixture {
         c.source = "lms";
       }
     } else if (s.startsWith("insert into users")) {
+      // Reconcile's auto-create SQL has 9 ? placeholders (role and
+      // status are literals, NOT ?). The bound params in order:
+      //   [id, email, password_hash, name, university_id,
+      //    external_provider, external_id, created_at, updated_at]
+      // — skip just password_hash + name, NOT four columns.
       const [
         id,
         email,
-        ,
-        ,
         ,
         ,
         university_id,
@@ -1283,5 +1286,288 @@ describe("runLmsReconciliation — UNI-67 iteration 3 owner auto-link", () => {
     expect(result.status).toBe("success");
     expect(fix.assignments[0]?.user_id).toBe(OPERATOR_HUB_USER_ID);
     expect(fix.auditActions).not.toContain("lms.sync.owner.matched");
+  });
+});
+
+describe("runLmsReconciliation — UNI-67 iteration 4 two-pass reconciliation", () => {
+  // The user's reported case ("error for registered students"): a TA
+  // who is also enrolled as a student in another course. Single-pass
+  // reconciliation processed the TA enrollment FIRST (Canvas order),
+  // demanded a pre-existing Hub user, and failed with
+  // `no_hub_user_for_teacher`. Two-pass fixes this: pass 1 creates the
+  // student row; pass 2 finds them by email and links the TA assignment.
+
+  it("Mohsen shape — student in C1 + TA in C2 → both succeed via two passes (one Hub user, two assignments)", async () => {
+    const fix = makeFixture();
+
+    const { provider } = makeProvider({
+      courses: [
+        {
+          external_id: "C1",
+          external_term_id: "T1",
+          name: "Operating Systems Security",
+          code: null,
+          description: null,
+        },
+        {
+          external_id: "C2",
+          external_term_id: "T1",
+          name: "Database Systems II",
+          code: null,
+          description: null,
+        },
+      ],
+      enrollmentsByCourse: {
+        C1: [
+          {
+            external_id: "Estu",
+            external_course_id: "C1",
+            external_user_id: "10192",
+            email: "mchitsaz@frostburg.edu",
+            name: "Mohsen Chitsaz",
+            role: "student",
+          },
+        ],
+        C2: [
+          {
+            external_id: "Eta",
+            external_course_id: "C2",
+            external_user_id: "10192",
+            email: "mchitsaz@frostburg.edu",
+            name: "Mohsen Chitsaz",
+            role: "teacher_assistant",
+          },
+        ],
+      },
+    });
+
+    const result = await run(fix, provider);
+
+    expect(result.status).toBe("success");
+    expect(result.errors).toEqual([]);
+    // Exactly ONE Hub user — the student auto-create in pass 1 is
+    // re-used by pass 2's TA matcher (via email match).
+    expect(fix.users).toHaveLength(1);
+    expect(fix.users[0]?.email).toBe("mchitsaz@frostburg.edu");
+    // Two assignments — student in C1, TA in C2 — both pointing at
+    // the same Hub user.
+    expect(fix.assignments).toHaveLength(2);
+    const roles = fix.assignments.map((a) => a.role).sort();
+    expect(roles).toEqual(["student", "teacher_assistant"]);
+    expect(fix.assignments.every((a) => a.user_id === fix.users[0]!.id)).toBe(
+      true,
+    );
+
+    // Summary tracks pass 1 (auto-create) and pass 2 (faculty match)
+    // separately so admins can see how each branch resolved.
+    expect(result.summary.students_created).toBe(1);
+    expect(result.summary.students_matched).toBe(0);
+    expect(result.summary.faculty_matched).toBe(1);
+    expect(result.summary.faculty_unmatched).toBe(0);
+  });
+
+  it("pure-faculty — Teacher with no student enrollment anywhere → fails in pass 2 with detailed log", async () => {
+    // A full-time professor who never takes a class. No prior Hub
+    // account. Pass 1 finds nothing student-shaped to create them
+    // through. Pass 2 hits the standard fail-with-log path because
+    // we never auto-create staff (locked decision).
+    const fix = makeFixture();
+
+    const { provider } = makeProvider({
+      courses: [
+        {
+          external_id: "C1",
+          external_term_id: "T1",
+          name: "Course 1",
+          code: null,
+          description: null,
+        },
+      ],
+      enrollmentsByCourse: {
+        C1: [
+          {
+            external_id: "Eteach",
+            external_course_id: "C1",
+            external_user_id: "u-teach",
+            email: "professor@example.edu",
+            name: "Professor",
+            role: "faculty",
+          },
+        ],
+      },
+    });
+
+    const result = await run(fix, provider);
+
+    expect(result.status).toBe("partial");
+    expect(fix.users).toHaveLength(0); // never auto-created
+    expect(fix.assignments).toHaveLength(0);
+    expect(result.errors[0]?.message).toContain("no_hub_user_for_faculty");
+    expect(result.errors[0]?.message).toContain("Professor");
+    expect(result.errors[0]?.message).toContain("canvas_user_id=u-teach");
+    // Counter rolled up from the error list.
+    expect(result.summary.faculty_unmatched).toBe(1);
+    expect(result.summary.faculty_matched).toBe(0);
+    expect(result.summary.students_created).toBe(0);
+  });
+
+  it("Mohsen-only-as-TA — same shape but no student enrollment → fails as usual; nobody to auto-create", async () => {
+    // Negative regression: if pass 1 doesn't see Mohsen as a student
+    // anywhere, pass 2 must still fail his TA row. No magic
+    // auto-create from a faculty-only row.
+    const fix = makeFixture();
+
+    const { provider } = makeProvider({
+      courses: [
+        {
+          external_id: "C2",
+          external_term_id: "T1",
+          name: "Database Systems II",
+          code: null,
+          description: null,
+        },
+      ],
+      enrollmentsByCourse: {
+        C2: [
+          {
+            external_id: "Eta",
+            external_course_id: "C2",
+            external_user_id: "10192",
+            email: "mchitsaz@frostburg.edu",
+            name: "Mohsen Chitsaz",
+            role: "teacher_assistant",
+          },
+        ],
+      },
+    });
+
+    const result = await run(fix, provider);
+    expect(result.status).toBe("partial");
+    expect(fix.users).toHaveLength(0);
+    expect(result.errors[0]?.message).toContain("no_hub_user_for_teacher_assistant");
+    expect(result.summary.faculty_unmatched).toBe(1);
+  });
+
+  it("connection owner as Teacher in their own course — still matches via owner-link rule (iteration 3 regression)", async () => {
+    // Iteration 3's owner-link rule must continue to fire in pass 2
+    // even though the row is now visited in the staff pass instead of
+    // the original single pass. The rule's precedence is independent
+    // of which pass ran the row.
+    const OPERATOR_HUB_USER_ID = ACTOR_USER_ID;
+    const OPERATOR_CANVAS_ID = "22620";
+
+    const fix = makeFixture({
+      users: [
+        {
+          id: OPERATOR_HUB_USER_ID,
+          email: "ebiz@chen.me",
+          university_id: UNI_A,
+          external_provider: null,
+          external_id: null,
+          role: "faculty",
+          status: "active",
+        },
+      ],
+    });
+
+    const { provider } = makeProvider({
+      courses: [
+        {
+          external_id: "C1",
+          external_term_id: "T1",
+          name: "Operator's own course",
+          code: null,
+          description: null,
+        },
+      ],
+      enrollmentsByCourse: {
+        C1: [
+          {
+            external_id: "Eteach",
+            external_course_id: "C1",
+            external_user_id: OPERATOR_CANVAS_ID,
+            email: "zchen@frostburg.edu",
+            name: "Zhijiang Chen",
+            role: "teacher",
+          },
+        ],
+      },
+    });
+
+    const result = await run(
+      fix,
+      provider,
+      makeInput(
+        "Spring 2026",
+        makeConnection({ external_user_id: OPERATOR_CANVAS_ID }),
+      ),
+    );
+
+    expect(result.status).toBe("success");
+    expect(result.errors).toEqual([]);
+    expect(fix.assignments).toHaveLength(1);
+    expect(fix.assignments[0]?.user_id).toBe(OPERATOR_HUB_USER_ID);
+    expect(fix.auditActions).toContain("lms.sync.owner.matched");
+    // Owner-match for a non-student counts toward faculty_matched.
+    expect(result.summary.faculty_matched).toBe(1);
+  });
+
+  it("courses are loaded BEFORE pass 1 so a student auto-created from C1 is visible to pass 2 in C2", async () => {
+    // Order-of-operations regression: contexts must be built first
+    // (Phase A) before either pass walks them. If pass 1 ran
+    // course-by-course (loading C1, processing, loading C2,
+    // processing), a student visible only in C2 wouldn't be created
+    // until C2's load — which is fine, but a TA in C1 that depends
+    // on a student in C2 would still fail.
+    //
+    // The fixture has:
+    //   C1: Mohsen as TA, Mohsen as student
+    //   C2: <nothing>
+    // Single-pass would still fail (TA ordered before student in C1),
+    // but two-pass succeeds because Pass 1 walks ALL of C1 finding
+    // Mohsen-as-student first. This asserts the partition predicate
+    // on role works regardless of intra-course order.
+    const fix = makeFixture();
+    const { provider } = makeProvider({
+      courses: [
+        {
+          external_id: "C1",
+          external_term_id: "T1",
+          name: "Course 1",
+          code: null,
+          description: null,
+        },
+      ],
+      enrollmentsByCourse: {
+        C1: [
+          {
+            external_id: "Eta",
+            external_course_id: "C1",
+            external_user_id: "u-mohsen",
+            email: "mohsen@example.edu",
+            name: "Mohsen",
+            role: "teacher_assistant",
+          },
+          {
+            external_id: "Estu",
+            external_course_id: "C1",
+            external_user_id: "u-mohsen",
+            email: "mohsen@example.edu",
+            name: "Mohsen",
+            role: "student",
+          },
+        ],
+      },
+    });
+
+    const result = await run(fix, provider);
+    expect(result.status).toBe("success");
+    expect(result.errors).toEqual([]);
+    expect(fix.users).toHaveLength(1);
+    expect(fix.assignments).toHaveLength(2);
+    expect(fix.assignments.map((a) => a.role).sort()).toEqual([
+      "student",
+      "teacher_assistant",
+    ]);
   });
 });

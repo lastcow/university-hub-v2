@@ -142,6 +142,8 @@ function emptySummary(): LmsSyncSummary {
     students_created: 0,
     students_matched: 0,
     students_invited: 0,
+    faculty_matched: 0,
+    faculty_unmatched: 0,
     enrollments_created: 0,
     enrollments_updated: 0,
     enrollments_unchanged: 0,
@@ -207,28 +209,34 @@ export async function runLmsReconciliation(
     return { status: "failed", summary, errors, conflicts };
   }
 
+  // Phase A — prepare each course: write the course row, fetch its
+  // enrollments, allocate the per-course `seenAssignments` set used by
+  // the post-pass drop-detection step. Failures here (course write
+  // throws, listEnrollments throws) record a course-scope error and
+  // exclude that course from the per-enrollment passes — its drops
+  // are NOT applied either, since we don't know what the live roster
+  // looks like.
+  const contexts: CourseContext[] = [];
   let coursesProcessed = 0;
-  let coursesSucceeded = 0;
   for (const course of courses) {
     coursesProcessed += 1;
     await emit(input.onProgress, {
       current_step: 2,
       total_steps: 4,
-      label: `Reconciling ${coursesProcessed}/${courses.length}: ${course.name}`,
+      label: `Loading ${coursesProcessed}/${courses.length}: ${course.name}`,
     });
     try {
-      await processCourse({
+      const ctx = await prepareCourse({
         db,
         provider,
         course,
         input,
         summary,
-        errors,
         conflicts,
         universityId,
         providerId,
       });
-      coursesSucceeded += 1;
+      contexts.push(ctx);
     } catch (cause) {
       const message =
         cause instanceof Error ? cause.message : "course reconciliation failed";
@@ -245,11 +253,65 @@ export async function runLmsReconciliation(
     }
   }
 
+  // Phase B — Pass 1: students first (UNI-67 iteration 4). Auto-create
+  // any unmatched student so their Hub user lands BEFORE we walk
+  // faculty/TA. A graduate student who is also a TA in another course
+  // gets created here, then matched-by-email in pass 2 instead of
+  // failing with `no_hub_user_for_teacher`.
   await emit(input.onProgress, {
     current_step: 3,
-    total_steps: 4,
+    total_steps: 5,
+    label: "Importing students",
+  });
+  await runEnrollmentPass(contexts, (e) => e.role === "student", {
+    db,
+    input,
+    summary,
+    errors,
+    universityId,
+    providerId,
+  });
+
+  // Phase C — Pass 2: faculty / TA, against the now-richer users table.
+  await emit(input.onProgress, {
+    current_step: 4,
+    total_steps: 5,
+    label: "Linking faculty and staff",
+  });
+  await runEnrollmentPass(contexts, (e) => e.role !== "student", {
+    db,
+    input,
+    summary,
+    errors,
+    universityId,
+    providerId,
+  });
+
+  // Phase D — drops. Walk the per-course `seenAssignments` set and
+  // soft-delete LMS-sourced course_assignments not touched by either
+  // pass.
+  await applyDrops(contexts, {
+    db,
+    input,
+    summary,
+    universityId,
+    providerId,
+  });
+
+  await emit(input.onProgress, {
+    current_step: 5,
+    total_steps: 5,
     label: "Finalising sync",
   });
+
+  // Roll up faculty_unmatched from the error list — every
+  // `no_hub_user_for_*` thrown in pass 2 lands here.
+  summary.faculty_unmatched = errors.filter(
+    (e) =>
+      e.scope === "enrollment" && e.message.startsWith("no_hub_user_for_"),
+  ).length;
+
+  const coursesSucceeded = contexts.length;
 
   let status: ReconciliationResult["status"];
   if (errors.length === 0) {
@@ -299,26 +361,40 @@ async function emit(
   }
 }
 
-interface CourseProcessingArgs {
+interface CourseContext {
+  course: LmsCourse;
+  /** The Hub `courses.id` — either the existing row or the just-INSERTed one. */
+  courseId: string;
+  enrollments: LmsEnrollment[];
+  /** Set of assignment dedup keys touched in either pass; used by
+   *  `applyDrops` to know which existing LMS-sourced rows are still
+   *  in the roster. */
+  seenAssignments: Set<string>;
+}
+
+interface PrepareCourseArgs {
   db: D1Database;
   provider: LmsProvider;
   course: LmsCourse;
   input: ReconciliationInput;
   summary: LmsSyncSummary;
-  errors: LmsSyncError[];
   conflicts: LmsSyncConflict[];
   universityId: string;
   providerId: LmsProviderId;
 }
 
-async function processCourse(args: CourseProcessingArgs): Promise<void> {
+/** Phase A: write the course row and load its enrollments. Each
+ *  course's writes are independent — a failure in `prepareCourse`
+ *  causes a course-scope error and the course is excluded from the
+ *  enrollment passes (and its drops are NOT applied since we never
+ *  saw the new roster). */
+async function prepareCourse(args: PrepareCourseArgs): Promise<CourseContext> {
   const {
     db,
     provider,
     course,
     input,
     summary,
-    errors,
     conflicts,
     universityId,
     providerId,
@@ -434,83 +510,124 @@ async function processCourse(args: CourseProcessingArgs): Promise<void> {
     },
   });
 
-  // 3. Track which assignment keys we touched so the soft-delete pass
-  //    knows which existing LMS-sourced rows are still in the roster.
-  const seenAssignments = new Set<string>();
+  // Initialise the per-course `seenAssignments` set; the two
+  // enrollment passes populate it, drops consult it.
+  return { course, courseId, enrollments, seenAssignments: new Set<string>() };
+}
 
-  for (const enr of enrollments) {
-    try {
-      await processEnrollment({
-        db,
-        course,
-        courseId,
-        enrollment: enr,
-        input,
-        summary,
-        seenAssignments,
-        universityId,
-        providerId,
-      });
-    } catch (cause) {
-      const message =
-        cause instanceof Error
-          ? cause.message
-          : "enrollment reconciliation failed";
-      errors.push({
-        scope: "enrollment",
-        external_id: enr.external_id ?? enr.external_user_id,
-        message,
-      });
-      console.error("lms_reconcile_enrollment_failed", {
-        sync_run_id: input.syncRunId,
-        course_external_id: course.external_id,
-        enrollment_external_id: enr.external_id,
-        cause,
-      });
+interface EnrollmentPassArgs {
+  db: D1Database;
+  input: ReconciliationInput;
+  summary: LmsSyncSummary;
+  errors: LmsSyncError[];
+  universityId: string;
+  providerId: LmsProviderId;
+}
+
+/** Walk every (course, enrollment) where the enrollment matches the
+ *  predicate. Per-row failures are caught and converted to an error
+ *  entry on the run; one bad row never aborts the pass. UNI-67
+ *  iteration 4 splits the original single-pass loop into students-then-
+ *  staff so that a TA-who-is-also-a-student gets created in pass 1 and
+ *  matched in pass 2 instead of failing. */
+async function runEnrollmentPass(
+  contexts: CourseContext[],
+  predicate: (e: LmsEnrollment) => boolean,
+  args: EnrollmentPassArgs,
+): Promise<void> {
+  const { db, input, summary, errors, universityId, providerId } = args;
+  for (const ctx of contexts) {
+    for (const enr of ctx.enrollments) {
+      if (!predicate(enr)) continue;
+      try {
+        await processEnrollment({
+          db,
+          course: ctx.course,
+          courseId: ctx.courseId,
+          enrollment: enr,
+          input,
+          summary,
+          seenAssignments: ctx.seenAssignments,
+          universityId,
+          providerId,
+        });
+      } catch (cause) {
+        const message =
+          cause instanceof Error
+            ? cause.message
+            : "enrollment reconciliation failed";
+        errors.push({
+          scope: "enrollment",
+          external_id: enr.external_id ?? enr.external_user_id,
+          message,
+        });
+        console.error("lms_reconcile_enrollment_failed", {
+          sync_run_id: input.syncRunId,
+          course_external_id: ctx.course.external_id,
+          enrollment_external_id: enr.external_id,
+          cause,
+        });
+      }
     }
   }
+}
 
-  // 4. Soft-delete drops. Anything LMS-sourced for this course/provider
-  //    that we didn't touch in this pass and is still 'active' becomes
-  //    'dropped'. Manual rows (source = 'manual') are explicitly left
-  //    alone — they don't belong to the LMS sync.
-  const liveAssignments = await queryAll<CourseAssignmentRow>(
-    db,
-    `SELECT id, course_id, user_id, role, source,
-            external_provider, external_id, status
-       FROM course_assignments
-      WHERE course_id = ?
-        AND source = 'lms'
-        AND external_provider = ?
-        AND status = 'active'`,
-    [courseId, providerId],
-  );
-  for (const a of liveAssignments) {
-    const key = assignmentKey(a.external_id, a.user_id, a.role);
-    if (seenAssignments.has(key)) continue;
-    await execute(
+interface DropsArgs {
+  db: D1Database;
+  input: ReconciliationInput;
+  summary: LmsSyncSummary;
+  universityId: string;
+  providerId: LmsProviderId;
+}
+
+/** Phase D: soft-delete LMS-sourced course_assignments rows whose
+ *  dedup keys weren't touched in either enrollment pass. Manual rows
+ *  (source != 'lms') are left alone. */
+async function applyDrops(
+  contexts: CourseContext[],
+  args: DropsArgs,
+): Promise<void> {
+  const { db, input, summary, universityId, providerId } = args;
+  const now = new Date().toISOString();
+  for (const ctx of contexts) {
+    const liveAssignments = await queryAll<CourseAssignmentRow>(
       db,
-      `UPDATE course_assignments
-          SET status = 'dropped', last_synced_at = ?, updated_at = ?
-        WHERE id = ?`,
-      [now, now, a.id],
+      `SELECT id, course_id, user_id, role, source,
+              external_provider, external_id, status
+         FROM course_assignments
+        WHERE course_id = ?
+          AND source = 'lms'
+          AND external_provider = ?
+          AND status = 'active'`,
+      [ctx.courseId, providerId],
     );
-    summary.enrollments_dropped += 1;
-    await writeAuditLog(db, {
-      action: "lms.sync.enrollment.dropped",
-      actorUserId: input.actorUserId,
-      universityId,
-      entityType: "course_assignment",
-      entityId: a.id,
-      metadata: {
-        sync_run_id: input.syncRunId,
-        course_id: courseId,
-        course_external_id: course.external_id,
-        user_id: a.user_id,
-        role: a.role,
-        external_id: a.external_id,
-      },
-    });
+    for (const a of liveAssignments) {
+      const key = assignmentKey(a.external_id, a.user_id, a.role);
+      if (ctx.seenAssignments.has(key)) continue;
+      await execute(
+        db,
+        `UPDATE course_assignments
+            SET status = 'dropped', last_synced_at = ?, updated_at = ?
+          WHERE id = ?`,
+        [now, now, a.id],
+      );
+      summary.enrollments_dropped += 1;
+      await writeAuditLog(db, {
+        action: "lms.sync.enrollment.dropped",
+        actorUserId: input.actorUserId,
+        universityId,
+        entityType: "course_assignment",
+        entityId: a.id,
+        metadata: {
+          sync_run_id: input.syncRunId,
+          course_id: ctx.courseId,
+          course_external_id: ctx.course.external_id,
+          user_id: a.user_id,
+          role: a.role,
+          external_id: a.external_id,
+        },
+      });
+    }
   }
 }
 
@@ -775,6 +892,15 @@ async function processEnrollment(args: EnrollmentProcessingArgs): Promise<void> 
         role: enrollment.role,
       },
     });
+  }
+
+  // UNI-67 iteration 4: faculty / TA match counter. Increment exactly
+  // once per matched non-student row, regardless of which rule fired
+  // (owner, external-linkage, or email). Pure students fall under the
+  // student counters above; pure auto-creates threw and never reach
+  // here.
+  if (!isStudent) {
+    summary.faculty_matched += 1;
   }
 
   // 5. Upsert the course_assignments row. The UNIQUE on (course, user,

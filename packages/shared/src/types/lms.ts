@@ -160,6 +160,15 @@ export interface LmsSyncSummary {
   students_created: number;
   students_matched: number;
   students_invited: number;
+  /** Faculty / TA enrollments resolved to an existing Hub user during
+   *  pass 2 of reconciliation. UNI-67 iteration 4: the engine now
+   *  imports students first, so a TA who is also a student in some
+   *  course gets auto-created in pass 1 and matched in pass 2. */
+  faculty_matched: number;
+  /** Faculty / TA enrollments that could not be resolved to any Hub
+   *  user — the per-row error list lives on `lms_sync_runs.error_log_json`.
+   *  These need manual onboarding. */
+  faculty_unmatched: number;
   enrollments_created: number;
   enrollments_updated: number;
   enrollments_unchanged: number;
