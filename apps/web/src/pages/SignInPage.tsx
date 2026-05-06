@@ -36,7 +36,7 @@ import { getOnboardingLmsStep } from "@/lib/onboarding";
 import { cn } from "@/lib/utils";
 
 /**
- * Location state recognized by `SignInPage`. Both fields are optional;
+ * Location state recognized by `SignInPage`. All fields are optional;
  * the page degrades gracefully when nothing is passed.
  *
  * - `from`: where to send the user after a successful sign-in. Set by
@@ -44,21 +44,25 @@ import { cn } from "@/lib/utils";
  *   a deep link.
  * - `mfaEnrollPending` (UNI-60): set by `AcceptInvitationPage` after a
  *   successful invitation accept. Tells `SignInPage` to skip the
- *   credentials prompt and render `MfaEnrollStep` directly — the
- *   challenge cookie was set by the accept endpoint, so the existing
- *   `/api/auth/mfa/enroll` call "just works".
+ *   credentials prompt and render `MfaEnrollStep` directly.
  * - `trustedDeviceEligible` (UNI-60): forwarded from the accept
  *   response so the post-enrollment surface stays consistent with the
  *   regular sign-in flow.
  * - `invitedEmail` (UNI-60): the address the invitation was sent to.
  *   Surfaced as a small reassurance line above the QR code so the user
  *   knows which account they are enrolling.
+ * - `mfaChallengeToken` (UNI-68): pending-MFA challenge token threaded
+ *   from the invitation-accept response. Echoed back on
+ *   `/api/auth/mfa/{enroll,verify-enroll}` via the
+ *   `X-Mfa-Challenge-Token` header so the flow works in browsers that
+ *   block the cross-site cookie on the Pages → Worker hop.
  */
 export interface SignInLocationState {
   from?: string;
   mfaEnrollPending?: boolean;
   trustedDeviceEligible?: boolean;
   invitedEmail?: string;
+  mfaChallengeToken?: string;
 }
 
 type Step = "credentials" | "mfa-enroll" | "mfa-challenge";
@@ -83,6 +87,15 @@ export function SignInPage() {
   // the invitation flow.
   const [trustedDeviceEligible, setTrustedDeviceEligible] = useState(
     locationState?.trustedDeviceEligible ?? false,
+  );
+  // UNI-68: pending-MFA challenge token. Captured from the sign-in
+  // response (`mfa_required` branch) or threaded in via location state
+  // from the invitation-accept flow. Passed back as the
+  // `X-Mfa-Challenge-Token` header on every /api/auth/mfa/* call so the
+  // verify step works without depending on a cross-site cookie that the
+  // browser may have dropped.
+  const [mfaChallengeToken, setMfaChallengeToken] = useState<string | null>(
+    locationState?.mfaChallengeToken ?? null,
   );
 
   const fromState = locationState?.from;
@@ -133,11 +146,15 @@ export function SignInPage() {
         await goAfterSignIn(next.user.role);
         return;
       }
-      // MFA gate: server set an HttpOnly mfa_challenge cookie. Move to the
-      // appropriate step. The user object is not in `next` until MFA is
-      // verified — we don't know their role yet, but goAfterSignIn will be
-      // called from the MFA step using the SessionUser returned there.
+      // MFA gate: server returned the pending-MFA challenge token (UNI-68)
+      // and ALSO set an HttpOnly cookie. We always use the token via
+      // `X-Mfa-Challenge-Token` — the cookie is defense in depth for
+      // browsers that allow cross-site cookies on the Pages → Worker hop.
+      // The user object is not in `next` until MFA is verified — we
+      // don't know their role yet, but goAfterSignIn will be called from
+      // the MFA step using the SessionUser returned there.
       setTrustedDeviceEligible(next.trusted_device_eligible);
+      setMfaChallengeToken(next.mfa_challenge_token);
       setStep(next.mfa_enrolled ? "mfa-challenge" : "mfa-enroll");
     } catch (cause) {
       if (cause instanceof ApiClientError) {
@@ -189,6 +206,7 @@ export function SignInPage() {
           />
         ) : step === "mfa-enroll" ? (
           <MfaEnrollStep
+            challengeToken={mfaChallengeToken}
             onVerified={(role) => {
               void goAfterSignIn(role);
             }}
@@ -200,6 +218,7 @@ export function SignInPage() {
           />
         ) : (
           <MfaChallengeStep
+            challengeToken={mfaChallengeToken}
             onVerified={(role) => {
               void goAfterSignIn(role);
             }}
@@ -311,10 +330,12 @@ function CredentialsForm({
 // ---------------------------------------------------------------------------
 
 function MfaEnrollStep({
+  challengeToken,
   onVerified,
   onBack,
   setSessionUser,
 }: {
+  challengeToken: string | null;
   onVerified: (role: string) => void;
   onBack: () => void;
   setSessionUser: ReturnType<typeof useAuth>["setSessionUser"];
@@ -329,7 +350,7 @@ function MfaEnrollStep({
   // Kick off the secret/recovery-code generation as soon as we land here.
   useEffect(() => {
     let cancelled = false;
-    startMfaEnrollment()
+    startMfaEnrollment(challengeToken)
       .then((res) => {
         if (!cancelled) setEnrollment(res);
       })
@@ -344,7 +365,7 @@ function MfaEnrollStep({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [challengeToken]);
 
   const qrUrl = useMemo(() => {
     if (!enrollment?.otpauth_url) return null;
@@ -360,7 +381,7 @@ function MfaEnrollStep({
     setVerifyError(null);
     setSubmitting(true);
     try {
-      const verified = await verifyMfaEnrollment(code);
+      const verified = await verifyMfaEnrollment(code, challengeToken);
       setSessionUser(verified.user);
       onVerified(verified.user.role);
     } catch (cause) {
@@ -512,11 +533,13 @@ function MfaEnrollStep({
 // ---------------------------------------------------------------------------
 
 function MfaChallengeStep({
+  challengeToken,
   onVerified,
   onBack,
   setSessionUser,
   trustedDeviceEligible,
 }: {
+  challengeToken: string | null;
   onVerified: (role: string) => void;
   onBack: () => void;
   setSessionUser: ReturnType<typeof useAuth>["setSessionUser"];
@@ -545,6 +568,7 @@ function MfaChallengeStep({
       const verified = await submitMfaChallenge(code, {
         rememberDevice:
           trustedDeviceEligible && !usingRecovery && rememberDevice,
+        challengeToken,
       });
       setSessionUser(verified.user);
       onVerified(verified.user.role);

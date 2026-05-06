@@ -5,9 +5,15 @@ import type { SessionUser } from "./user.js";
 /**
  * Response shape for `POST /api/auth/sign-in`. Either the session is issued
  * immediately (`status: "ok"`), or the user must complete an MFA challenge
- * before we hand back a session cookie. The MFA challenge token itself is
- * carried in an HttpOnly cookie; the body only signals what the SPA should
- * do next.
+ * before we hand back a session cookie.
+ *
+ * UNI-68: the MFA challenge token is surfaced in `mfa_challenge_token` in
+ * addition to the `university_hub_mfa_challenge` HttpOnly cookie. The SPA
+ * passes it back on subsequent `/api/auth/mfa/{enroll,verify-enroll,
+ * challenge}` calls via the `X-Mfa-Challenge-Token` header so the verify
+ * step works even when the browser blocks the cross-site cookie on the
+ * Pages → Worker hop. The cookie remains as defense in depth for clients
+ * that allow it.
  */
 export type SignInResponse =
   | { status: "ok"; user: SessionUser }
@@ -31,6 +37,14 @@ export type SignInResponse =
        * never see this response.
        */
       trusted_device_eligible: boolean;
+      /**
+       * UNI-68: short-lived (5 min) opaque token tying this sign-in to its
+       * pending MFA challenge. The SPA echoes it back on the follow-up
+       * MFA endpoints via the `X-Mfa-Challenge-Token` header so the flow
+       * works even when the browser blocks the matching HttpOnly cookie
+       * on the Pages → Worker cross-site boundary.
+       */
+      mfa_challenge_token: string;
     };
 
 /**

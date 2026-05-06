@@ -97,6 +97,14 @@ import { trustedDeviceCookieName } from "./trusted-devices.js";
 
 const SESSION_COOKIE_DEFAULT = "university_hub_session";
 const MFA_CHALLENGE_COOKIE_DEFAULT = "university_hub_mfa_challenge";
+/**
+ * UNI-68: header the SPA uses to echo back the short-lived MFA challenge
+ * token returned in the sign-in / invitation-accept response body. Used
+ * in addition to the `university_hub_mfa_challenge` cookie so the verify
+ * step works when the browser blocks the cross-site cookie on the Pages
+ * → Worker boundary.
+ */
+const MFA_CHALLENGE_HEADER = "x-mfa-challenge-token";
 
 export type MfaUserRow = UserRow & {
   mfa_secret: string | null;
@@ -136,7 +144,16 @@ async function readJson(request: Request): Promise<unknown> {
   }
 }
 
+/**
+ * Resolve the pending-MFA challenge token from the request. Prefers the
+ * explicit `X-Mfa-Challenge-Token` header (UNI-68 — the SPA always sends
+ * it because the cross-site cookie can be blocked by the browser on the
+ * Pages → Worker hop), falling back to the `university_hub_mfa_challenge`
+ * cookie for clients that allow it.
+ */
 function getMfaChallengeToken(ctx: RequestContext): string | null {
+  const headerToken = ctx.request.headers.get(MFA_CHALLENGE_HEADER);
+  if (headerToken && headerToken.length > 0) return headerToken;
   return ctx.cookies[mfaChallengeCookieName(ctx.env)] ?? null;
 }
 
@@ -852,9 +869,15 @@ export async function revokeTrustedDevicesAndAudit(
 // Shared with routes/auth.ts: when a sign-in needs MFA, this builds the
 // challenge cookie + body shape. Kept here so the cookie name and TTL stay
 // next to the rest of the MFA code.
+//
+// UNI-68: also surfaces the raw `token` so the caller can include it in
+// the JSON response body for the SPA to echo back via
+// `X-Mfa-Challenge-Token`. The cookie still ships as defense in depth for
+// browsers that allow the cross-site Set-Cookie on the Pages → Worker hop.
 // ---------------------------------------------------------------------------
 export interface MfaChallengeIssued {
   setCookie: string;
+  token: string;
   enrolled: boolean;
 }
 
@@ -886,6 +909,7 @@ export async function issueMfaChallenge(
 
   return {
     setCookie,
+    token: created.token,
     enrolled: Boolean(user.mfa_enabled_at),
   };
 }

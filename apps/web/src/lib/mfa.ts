@@ -1,6 +1,15 @@
-// API client for the MFA endpoints (UNI-24). The MFA challenge cookie is
-// HttpOnly and managed entirely by the worker; the browser sends it back
-// automatically via `credentials: "include"` in the shared API client.
+// API client for the MFA endpoints (UNI-24).
+//
+// UNI-68: the pending-MFA challenge token is now passed as the
+// `X-Mfa-Challenge-Token` header on every `/enroll`, `/verify-enroll`,
+// and `/challenge` request. The token also rides on the
+// `university_hub_mfa_challenge` HttpOnly cookie as defense in depth,
+// but browsers that block third-party cookies on the Pages → Worker hop
+// (Safari ITP, Firefox total cookie protection, Brave, Chrome with 3p
+// cookies disabled) drop the cookie — which previously surfaced as
+// "Sign in again to complete MFA verification." even when the user
+// typed a valid TOTP code. The header path makes the verify step
+// independent of cross-site cookie behavior.
 
 import type {
   MfaEnrollResponse,
@@ -11,22 +20,44 @@ import type {
 
 import { api } from "./api";
 
-export function startMfaEnrollment(): Promise<MfaEnrollResponse> {
-  return api.post<MfaEnrollResponse>("/api/auth/mfa/enroll");
+const MFA_CHALLENGE_HEADER = "x-mfa-challenge-token";
+
+function challengeHeaders(token: string | null | undefined): HeadersInit | undefined {
+  if (!token) return undefined;
+  return { [MFA_CHALLENGE_HEADER]: token };
 }
 
-export function verifyMfaEnrollment(code: string): Promise<MfaVerifyResponse> {
-  return api.post<MfaVerifyResponse>("/api/auth/mfa/verify-enroll", { code });
+export function startMfaEnrollment(
+  challengeToken?: string | null,
+): Promise<MfaEnrollResponse> {
+  return api.post<MfaEnrollResponse>("/api/auth/mfa/enroll", undefined, {
+    headers: challengeHeaders(challengeToken),
+  });
+}
+
+export function verifyMfaEnrollment(
+  code: string,
+  challengeToken?: string | null,
+): Promise<MfaVerifyResponse> {
+  return api.post<MfaVerifyResponse>(
+    "/api/auth/mfa/verify-enroll",
+    { code },
+    { headers: challengeHeaders(challengeToken) },
+  );
 }
 
 export function submitMfaChallenge(
   code: string,
-  options: { rememberDevice?: boolean } = {},
+  options: { rememberDevice?: boolean; challengeToken?: string | null } = {},
 ): Promise<MfaVerifyResponse> {
-  return api.post<MfaVerifyResponse>("/api/auth/mfa/challenge", {
-    code,
-    remember_device: options.rememberDevice ?? false,
-  });
+  return api.post<MfaVerifyResponse>(
+    "/api/auth/mfa/challenge",
+    {
+      code,
+      remember_device: options.rememberDevice ?? false,
+    },
+    { headers: challengeHeaders(options.challengeToken) },
+  );
 }
 
 export function getMfaStatus(signal?: AbortSignal): Promise<MfaStatusResponse> {

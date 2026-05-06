@@ -106,15 +106,22 @@ export function AcceptInvitationPage() {
         confirmPassword,
         terms_accepted: true,
       });
-      // UNI-60: backend issued an MFA challenge cookie (not a session).
-      // Hand the user off to the sign-in page's MFA-enroll step directly
-      // — `SignInPage` reads this location state and skips its own
+      // UNI-60: backend issued an MFA challenge (not a session). Hand
+      // the user off to the sign-in page's MFA-enroll step directly —
+      // `SignInPage` reads this location state and skips its own
       // credentials prompt. Verify-enroll then mints the real session
       // and lands the user on /app/dashboard.
+      //
+      // UNI-68: thread `mfa_challenge_token` through location state so
+      // SignInPage can echo it back via `X-Mfa-Challenge-Token` on the
+      // /api/auth/mfa/{enroll,verify-enroll} calls. The cookie that the
+      // accept response also set works in browsers that allow cross-
+      // site cookies; the header path covers everyone else.
       const signInState: SignInLocationState = {
         mfaEnrollPending: true,
         trustedDeviceEligible: result.trusted_device_eligible,
         invitedEmail: result.email,
+        mfaChallengeToken: result.mfa_challenge_token,
       };
       navigate("/sign-in", { replace: true, state: signInState });
     } catch (cause) {
