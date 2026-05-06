@@ -1,5 +1,86 @@
 import type { ApiError } from "@university-hub/shared";
 
+// ---------------------------------------------------------------------------
+// Session token storage (UNI-70)
+//
+// In production the SPA on `*.pages.dev` calls the Worker on `*.workers.dev`
+// — separate eTLD+1's, so every request is third-party. Privacy-strict
+// browsers (Safari ITP, Firefox total cookie protection, Brave, Chrome
+// with 3p cookies disabled) silently drop the cross-site session cookie,
+// which used to leave users authenticated server-side but unauthenticated
+// client-side ("Authentication required" on every protected page on first
+// load post-MFA).
+//
+// The Worker now also surfaces the raw session token in the sign-in /
+// MFA-verify response body. We persist it here and replay it on every
+// request via `Authorization: Bearer <token>`. The cookie still ships
+// from the Worker as defense in depth for browsers that allow it; the
+// header is the source of truth for cross-site browsers.
+//
+// The token is XSS-equivalent in scope to the rest of the app's auth
+// state, but not strictly worse: an attacker with script execution on
+// the SPA can already make authenticated `fetch()` calls because the
+// browser attaches the (HttpOnly) cookie automatically when present.
+// localStorage moves the bearer surface from "implicit on every fetch"
+// to "explicit, readable by JS"; CSP + dependency hygiene remain the
+// real mitigations.
+//
+// SSR-safe (`typeof window` guard) so the import doesn't crash in tests
+// or any future server-rendered surface.
+// ---------------------------------------------------------------------------
+
+const SESSION_TOKEN_STORAGE_KEY = "university_hub_session_token";
+
+function safeLocalStorage(): Storage | null {
+  try {
+    if (typeof window === "undefined") return null;
+    const ls = window.localStorage;
+    // Probe — Safari Private Browsing throws on .setItem when storage is
+    // denied. Treat any exception as "no storage available" and degrade
+    // to header-less requests (the cookie still works for browsers that
+    // accept it; everyone else will surface as unauthenticated, which is
+    // strictly better than crashing the SPA).
+    const probe = "__university_hub_probe__";
+    ls.setItem(probe, "1");
+    ls.removeItem(probe);
+    return ls;
+  } catch {
+    return null;
+  }
+}
+
+export function getStoredSessionToken(): string | null {
+  const ls = safeLocalStorage();
+  if (!ls) return null;
+  try {
+    const value = ls.getItem(SESSION_TOKEN_STORAGE_KEY);
+    return value && value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredSessionToken(token: string): void {
+  const ls = safeLocalStorage();
+  if (!ls) return;
+  try {
+    ls.setItem(SESSION_TOKEN_STORAGE_KEY, token);
+  } catch {
+    // Storage write failed (quota, disabled mid-session). Same fallback
+    // posture as `safeLocalStorage`: degrade silently, don't crash.
+  }
+}
+
+export function clearStoredSessionToken(): void {
+  const ls = safeLocalStorage();
+  if (!ls) return;
+  try {
+    ls.removeItem(SESSION_TOKEN_STORAGE_KEY);
+  } catch {
+    // No-op — same fallback posture as the read path.
+  }
+}
+
 export class ApiClientError extends Error {
   readonly status: number;
   readonly code: string;
@@ -190,6 +271,19 @@ export class ApiClient {
       });
     }
     headers.set("accept", "application/json");
+
+    // UNI-70: attach the persisted session token as a Bearer credential.
+    // This is the SPA's primary auth transport in production because the
+    // cross-site session cookie is dropped by privacy-strict browsers.
+    // We only set it when the caller did not already set its own
+    // Authorization header (e.g. the bootstrap endpoint uses a one-shot
+    // BOOTSTRAP_SECRET — leave caller-supplied values alone).
+    if (!headers.has("authorization")) {
+      const token = getStoredSessionToken();
+      if (token) {
+        headers.set("authorization", `Bearer ${token}`);
+      }
+    }
 
     const init: RequestInit = {
       method: options.method,

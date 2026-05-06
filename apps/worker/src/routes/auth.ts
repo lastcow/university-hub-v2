@@ -34,6 +34,7 @@ import {
   deleteSessionByToken,
   toSessionUser,
 } from "../auth/session.js";
+import { getSessionToken } from "../middleware/auth.js";
 import {
   deleteTrustedDeviceById,
   findTrustedDeviceByFingerprint,
@@ -357,13 +358,26 @@ export async function handleSignIn(ctx: RequestContext): Promise<Response> {
     expires: created.expiresAt,
   });
 
-  const body: SignInResponse = { status: "ok", user: sessionUser };
+  // UNI-70: surface the raw session token in the body too. The cookie
+  // still ships, but cross-site browsers (Pages → Worker hop) drop it,
+  // and without the token in the body the SPA would land on the
+  // dashboard with no way to authenticate the next API call. The SPA
+  // persists this and echoes it back as `Authorization: Bearer <token>`.
+  const body: SignInResponse = {
+    status: "ok",
+    user: sessionUser,
+    session_token: created.token,
+  };
   return jsonOk(body, { headers: { "set-cookie": setCookie } });
 }
 
 export async function handleSignOut(ctx: RequestContext): Promise<Response> {
   const cookieName = sessionCookieName(ctx);
-  const token = ctx.cookies[cookieName];
+  // UNI-70: read the token from either transport so a sign-out from a
+  // browser that never received the cross-site cookie still revokes the
+  // server-side row. `getSessionToken` prefers the Authorization header
+  // and falls back to the cookie — same precedence as `buildContext`.
+  const token = getSessionToken(ctx.request, ctx.cookies, ctx.env);
   const actor = ctx.auth?.user ?? null;
 
   if (token) {

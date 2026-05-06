@@ -192,7 +192,19 @@ async function resolveChallengeContext(
 async function issueSessionForUser(
   ctx: RequestContext,
   user: UserRow,
-): Promise<{ sessionUser: SessionUser; setCookie: string }> {
+): Promise<{
+  sessionUser: SessionUser;
+  setCookie: string;
+  /**
+   * UNI-70: raw session token (same value as the cookie). Returned so
+   * the caller can put it in the JSON response body for the SPA to
+   * persist and replay as `Authorization: Bearer <token>`. The cookie
+   * is dropped by browsers that block cross-site Set-Cookie on the
+   * Pages → Worker hop; the token-in-body path keeps the user
+   * authenticated regardless.
+   */
+  sessionToken: string;
+}> {
   const userAgent = ctx.request.headers.get("user-agent");
   const ipAddress =
     ctx.request.headers.get("cf-connecting-ip") ??
@@ -226,7 +238,11 @@ async function issueSessionForUser(
     expires: created.expiresAt,
   });
 
-  return { sessionUser: toSessionUser(user), setCookie };
+  return {
+    sessionUser: toSessionUser(user),
+    setCookie,
+    sessionToken: created.token,
+  };
 }
 
 function appendCookie(headers: Headers, cookie: string): void {
@@ -419,7 +435,10 @@ export async function handleMfaVerifyEnroll(
   // record-fingerprint helper no-ops for them by role guard.
   await recordRiskFingerprint(ctx, { ...user, mfa_enabled_at: now });
 
-  const { sessionUser, setCookie } = await issueSessionForUser(ctx, user);
+  const { sessionUser, setCookie, sessionToken } = await issueSessionForUser(
+    ctx,
+    user,
+  );
 
   const headers = new Headers();
   appendCookie(headers, setCookie);
@@ -428,7 +447,10 @@ export async function handleMfaVerifyEnroll(
     buildMfaChallengeClearCookie(ctx.env, mfaChallengeCookieName(ctx.env)),
   );
 
-  const body: MfaVerifyResponse = { user: sessionUser };
+  // UNI-70: include the raw session token in the body so the SPA can
+  // authenticate via `Authorization: Bearer <token>` even when the
+  // cross-site session cookie is dropped by the browser.
+  const body: MfaVerifyResponse = { user: sessionUser, session_token: sessionToken };
   return jsonOk(body, { headers });
 }
 
@@ -544,7 +566,10 @@ export async function handleMfaChallenge(
 
   await deleteMfaChallenge(ctx.env.DB, token);
 
-  const { sessionUser, setCookie } = await issueSessionForUser(ctx, user);
+  const { sessionUser, setCookie, sessionToken } = await issueSessionForUser(
+    ctx,
+    user,
+  );
 
   const headers = new Headers();
   appendCookie(headers, setCookie);
@@ -573,7 +598,10 @@ export async function handleMfaChallenge(
     }
   }
 
-  const body: MfaVerifyResponse = { user: sessionUser };
+  // UNI-70: include the raw session token in the body so the SPA can
+  // authenticate via `Authorization: Bearer <token>` even when the
+  // cross-site session cookie is dropped by the browser.
+  const body: MfaVerifyResponse = { user: sessionUser, session_token: sessionToken };
   return jsonOk(body, { headers });
 }
 
