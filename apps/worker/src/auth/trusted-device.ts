@@ -26,6 +26,39 @@ import type { Env } from "../env.js";
 
 const TOKEN_BYTES = 32;
 
+/**
+ * Prefix marking a `trusted_devices.token_hash` value as a UNI-49
+ * fingerprint-only row (one with no cookie minted). The remainder of the
+ * value is a random uuid so each row carries a globally-unique value —
+ * required because `token_hash` is `NOT NULL UNIQUE`. Earlier code used
+ * the empty string as a single shared sentinel, which violated UNIQUE the
+ * moment a second non-admin user (or the same user from a second device)
+ * tried to write a fingerprint row and surfaced as a 500 from
+ * `/api/auth/mfa/{verify-enroll,challenge}` (UNI-69).
+ *
+ * The prefix is intentionally non-hex so it cannot collide with a real
+ * cookie hash (`hashTrustedDeviceToken` returns 64 hex chars). Combined
+ * with the cookie resolver's `token_hash NOT LIKE 'fp_only:%'` filter it
+ * is impossible for a request to resolve a fingerprint-only row through
+ * the cookie path.
+ */
+export const FINGERPRINT_ONLY_TOKEN_PREFIX = "fp_only:";
+
+/** Mint a unique sentinel for a fingerprint-only `trusted_devices` row. */
+function generateFingerprintOnlyTokenHash(): string {
+  return `${FINGERPRINT_ONLY_TOKEN_PREFIX}${crypto.randomUUID()}`;
+}
+
+/**
+ * `true` for token_hash values that mark a fingerprint-only row (no
+ * cookie was ever minted, so the row cannot be resolved by the UNI-47
+ * cookie path). Recognises both the legacy empty-string sentinel and the
+ * new uuid-suffixed sentinel introduced by UNI-69.
+ */
+export function isFingerprintOnlyTokenHash(tokenHash: string): boolean {
+  return tokenHash === "" || tokenHash.startsWith(FINGERPRINT_ONLY_TOKEN_PREFIX);
+}
+
 export type TrustedDeviceRow = Row & {
   id: string;
   user_id: string;
@@ -233,9 +266,12 @@ export async function recordFingerprintMfaSuccess(
     );
     return { id: existing.id, isNew: false };
   }
-  // Fingerprint-only row: no cookie was minted, so token_hash is the empty
-  // string. The cookie path explicitly skips empty-string lookups so this
-  // row can never be resolved via the UNI-47 cookie surface.
+  // Fingerprint-only row: no cookie was minted. Token_hash carries a
+  // unique `fp_only:<uuid>` sentinel — `token_hash` is `NOT NULL UNIQUE`,
+  // so a shared empty-string sentinel collided the moment two different
+  // (user, fingerprint) pairs needed rows (UNI-69). The prefix is non-hex
+  // and the cookie resolver excludes it explicitly, so this row remains
+  // unresolvable via the UNI-47 cookie surface.
   const id = crypto.randomUUID();
   // Far-future expiry so the existing UNI-47 expiry filter doesn't drop
   // the row before its natural revoke (Date.UTC year 9999 is the largest
@@ -253,7 +289,7 @@ export async function recordFingerprintMfaSuccess(
     [
       id,
       input.userId,
-      "", // sentinel: this row has no cookie; not resolvable via cookie path
+      generateFingerprintOnlyTokenHash(),
       input.ipAddress,
       input.userAgent,
       farFuture,
@@ -294,9 +330,11 @@ export async function resolveTrustedDeviceByToken(
 ): Promise<TrustedDeviceRow | null> {
   if (!token) return null;
   const tokenHash = await hashTrustedDeviceToken(token, getSessionSecret(env));
-  // Defensively skip the empty-string sentinel used by fingerprint-only
-  // rows (UNI-49). A request whose cookie HMAC'd to the empty hash would
-  // otherwise match every fingerprint-only row at once.
+  // Defensively skip fingerprint-only sentinels. `hashTrustedDeviceToken`
+  // returns a 64-char hex digest, so it can never `=` an `fp_only:<uuid>`
+  // sentinel — but the explicit filter keeps the cookie path strictly
+  // restricted to UNI-47 rows even if the hash function is ever changed.
+  // The legacy `token_hash != ''` clause stays for any pre-UNI-69 rows.
   if (!tokenHash) return null;
   const row = await queryFirst<TrustedDeviceRow>(
     env.DB,
@@ -304,6 +342,7 @@ export async function resolveTrustedDeviceByToken(
        FROM trusted_devices
       WHERE token_hash = ?
         AND token_hash != ''
+        AND token_hash NOT LIKE 'fp_only:%'
       LIMIT 1`,
     [tokenHash],
   );
