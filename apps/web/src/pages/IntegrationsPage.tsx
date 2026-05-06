@@ -16,9 +16,10 @@
 // agreed to the disclosure".
 
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
+  ArrowRight,
   CheckCircle2,
   Link2,
   Loader2,
@@ -1009,9 +1010,21 @@ function SyncRunModal({
           ) : null}
 
           {modal.step === "done" ? (
-            <Button type="button" onClick={handleClose}>
-              Close
-            </Button>
+            <>
+              {modal.syncRun &&
+              (modal.syncRun.status === "success" ||
+                modal.syncRun.status === "partial") ? (
+                <Button asChild type="button" variant="outline">
+                  <Link to="/app/courses" onClick={() => handleClose()}>
+                    View imported courses
+                    <ArrowRight className="ml-2 h-4 w-4" />
+                  </Link>
+                </Button>
+              ) : null}
+              <Button type="button" onClick={handleClose}>
+                Close
+              </Button>
+            </>
           ) : null}
         </DialogFooter>
       </DialogContent>
